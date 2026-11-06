@@ -83,8 +83,8 @@ state or the new one. Host tests cut power at every byte of every write and
 erase across 270 saves, and planted bugs make them fail.
 
 Crates: `rb-state` (logic, host-tested), `rb-core` (flash driver, layout,
-`confirm`, `Installer`, `reboot`; shared with apps), `demo-app` (update test app), and the
-bootloader itself (`src/`).
+`confirm`, `Installer`, `reboot`; shared with apps), `demo-app` (update test app),
+`crypto-bench` (crypto timings on the chip), and the bootloader itself (`src/`).
 
 **Apps compile the flash layout in** (through `rb-core`), so after any
 change to `rb-core/src/layout.rs`, rebuild and re-sign the apps as well as
@@ -248,6 +248,27 @@ No reset or jumper at any step: each update ended in `rb_core::reboot`.
 | v7 installs v10 | `ON TRIAL` → `confirmed` |
 
 About 4 s per 18 KB image over UART at 115200.
+
+### Crypto cost (`crypto-bench`, installed as v11 via `just app-update`)
+
+TIMER0 at 100 MHz; three runs each, identical.
+
+| Operation | Time |
+|---|---|
+| SHA-256, 64 KiB | 67.3 ms: 950 KB/s, about 66 us per 64-byte block |
+| SHA-256, 59-byte message (2 blocks) | 161 us per call |
+| Flash read, 45,388-byte image (SPI3 at 6.25 MHz) | 94 ms |
+| `verify` of that image | 414 ms: SHA-256 47 ms + **ECDSA P-256 ~367 ms** |
+
+Code size (symbol table of `rustboot-thejas32`, approximate because LTO
+inlines across crates): SHA-256 ~6.8 KB, P-256/ECDSA ~13.5 KB, header parse
+and glue ~4.2 KB, of a 66 KB bootloader.
+
+For comparison, LMS (NIST SP 800-208) verification is one-block SHA-256
+calls only. At the measured ~66 us per block, LMS-SHA256 with a height-10
+tree would take about 13 ms (Winternitz w=2, ~4.6 KB signature), 34 ms
+(w=4, ~2.5 KB) or 290 ms (w=8, ~1.4 KB). These are estimates from the
+measured hash cost, not measurements.
 
 ## Security notes
 

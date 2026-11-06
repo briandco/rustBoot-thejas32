@@ -1,0 +1,21 @@
+[package]
+name = "crypto-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Times SHA-256 and rustBoot's ECDSA P-256 verification on THEJAS32"
+license = "MIT"
+
+[[bin]]
+name = "crypto-bench"
+test = false
+bench = false
+
+[dependencies]
+rb-core = { path = "../rb-core" }
+rustBoot = { path = "../../../../rustBoot", default-features = false, features = ["nistp256", "sha256", "log"] }
+sha2 = { version = "0.9.9", default-features = false }
+thejas32-hal = { path = "../../../../../thejas32-rs/thejas32-hal" }
+thejas32-pac = { path = "../../../../../thejas32-rs/thejas32-pac", features = ["rt"] }
+riscv-rt = { version = "0.13.0", features = ["single-hart"] }
+embedded-hal-nb = "1.0.0"
+nb = "1.1.0"

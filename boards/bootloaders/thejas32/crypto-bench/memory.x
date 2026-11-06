@@ -1,0 +1,14 @@
+/* THEJAS32 memory layout.
+   Bootloader v1.0.0 banner reports: IRAM [0x200000 - 0x23E7FF] = 250 KB.
+   LENGTH must be 250K, not 256K, or _stack_start lands 6 KB past the end. */
+MEMORY
+{
+    RAM : ORIGIN = 0x200000, LENGTH = 250K
+}
+
+REGION_ALIAS("REGION_TEXT", RAM);
+REGION_ALIAS("REGION_RODATA", RAM);
+REGION_ALIAS("REGION_DATA", RAM);
+REGION_ALIAS("REGION_BSS", RAM);
+REGION_ALIAS("REGION_HEAP", RAM);
+REGION_ALIAS("REGION_STACK", RAM);

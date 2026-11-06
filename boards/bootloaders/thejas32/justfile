@@ -29,6 +29,12 @@ demo version confirm="1":
     riscv32-unknown-elf-objcopy -O binary {{OUT}}/demo-app {{OUT}}/demo-v{{version}}{{ if confirm == "0" { "-noconfirm" } else { "" } }}.bin
     just sign {{OUT}}/demo-v{{version}}{{ if confirm == "0" { "-noconfirm" } else { "" } }}.bin {{version}}
 
+# Build and sign the crypto benchmark as version N; install it with `just app-update`
+bench version:
+    BENCH_VERSION={{version}} cargo build --release -p crypto-bench
+    riscv32-unknown-elf-objcopy -O binary {{OUT}}/crypto-bench {{OUT}}/crypto-bench-v{{version}}.bin
+    just sign {{OUT}}/crypto-bench-v{{version}}.bin {{version}}
+
 # Write flash.img with the CDAC flasher (J12 open, then fitted). Free the serial port first.
 flash img=(OUT + "/flash.img"):
     uv run tools/flash_persist.py {{img}}

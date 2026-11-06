@@ -31,7 +31,7 @@ hwtest = []
 
 # Built on its own, not as part of the ARM `boards` workspace.
 [workspace]
-members = ["rb-state", "rb-core", "demo-app"]
+members = ["rb-state", "rb-core", "demo-app", "crypto-bench"]
 
 [profile.release]
 opt-level = "z"
