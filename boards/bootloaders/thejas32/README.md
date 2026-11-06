@@ -23,16 +23,24 @@ just test                # host tests
 ```
 
 After provisioning, J12 stays fitted: updates go through rustBoot.
+Reprovisioning rustBoot later (`just provision`, `just flash`) leaves the
+installed apps and the boot state in place.
 
 ## Layout
 
 ```
 SPI flash (AT25SF161, 2 MB)               IRAM (0x200000 .. 0x240000)
 0x000000  rustBoot (128 KB slot)           0x200000  application, 160 KB
-0x020000  slot A (192 KB)                            (also the update receive buffer)
-0x050000  slot B (192 KB)                  0x228000  rustBoot, 96 KB incl. stack
-0x080000  boot state log (2 x 4 KB)
+0x020000  unused (see below)                         (also the update receive buffer)
+0x040000  slot A (192 KB)                  0x228000  rustBoot, 96 KB incl. stack
+0x070000  slot B (192 KB)
+0x0A0000  boot state log (2 x 4 KB)
 ```
+
+CDAC's `flasher.bin`, the only way to write rustBoot itself, always erases
+`0x0..0x40000`. Apps and state start above that, so reprovisioning rustBoot
+cannot erase them. (Earlier layouts put slot A at `0x10000` and then
+`0x20000`, where reprovisioning wiped it.)
 
 Images are header (256 B) + firmware, up to 160 KB in total: the RAM they run
 from bounds them, not the flash slot.
@@ -43,7 +51,8 @@ from bounds them, not the flash slot.
    and jumps there.
 2. `_reloc_start` (position-independent) copies rustBoot to `0x228000`.
 3. rustBoot checks the flash JEDEC ID and loads the boot state, then listens
-   500 ms for `r` (recovery).
+   500 ms for `r` (recovery). Recovery boots normally after 60 s with no
+   input.
 4. `rb_state::plan` picks a slot. Each candidate is copied to `0x200000` and
    **that RAM copy** is verified, so the bytes checked are the bytes that run.
 5. It restores the ROM's `mtvec`, masks interrupts via `mie`, and jumps to
@@ -75,6 +84,13 @@ erase across 270 saves, and planted bugs make them fail.
 Crates: `rb-state` (logic, host-tested), `rb-core` (flash driver, layout,
 `confirm`; shared with apps), `demo-app` (update test app), and the
 bootloader itself (`src/`).
+
+**Apps compile the flash layout in** (through `rb-core`), so after any
+change to `rb-core/src/layout.rs`, rebuild and re-sign the apps as well as
+rustBoot. An app built for another layout cannot find the boot state:
+`confirm` then returns `NoBootState` and writes nothing, and the update rolls
+back at the next reset. (Found on hardware: a demo built before the slots
+moved reported "nothing to confirm".)
 
 ## What changed from upstream rustBoot
 
@@ -166,17 +182,56 @@ leave things. A cut in the middle of a state save is covered by the host test
 (every byte of every write) but was not reproduced by hand: the window is
 about 1 ms.
 
+### Layout move and recovery timeout
+
+After moving apps and state above `0x40000`:
+
+- Reprovisioned rustBoot onto empty slots: recovery, then after 60 s idle
+  `no input for 60 s; leaving recovery`, then back to recovery (nothing to boot).
+- Installed v5 (rebuilt for the new layout): trial, confirmed, `active B, min version 5`.
+- Reprovisioned rustBoot again: it booted v5 straight away with
+  `state: active B, min version 5`. Reflashing rustBoot no longer touches apps.
+
 ## Security notes
 
 - **Keys.** Upstream's `boards/sign_images/keygen/ecc256.der` contains its
   private key and is public. Don't use it. `keys/rustboot-dev.der` is a
-  development key generated locally; it is git-ignored. Production needs a
-  separate key held off the build machine.
+  development key generated locally; it is git-ignored, and the committed
+  `keys/pubkey.bin` is its public half. See "Production keys" below.
 - **Not protected against physical access.** Anyone who can remove the J12
   jumper can load unsigned code over UART, because the ROM boots from UART
   when J12 is open. rustBoot only protects the flash boot path.
-- **Anti-rollback state is in ordinary flash.** Anyone who can write the
-  flash directly (J12 open plus CDAC's flasher) can reset the minimum
-  version. THEJAS32 has no fuses or secure storage known to us.
+- **Anti-rollback state is in ordinary flash.** Anyone who can run their
+  own code (J12 open) can rewrite it and reset the minimum version. THEJAS32
+  has no fuses or secure storage known to us.
 - **Recovery has no authentication.** Anyone on the UART can upload, but only
-  images signed with your key are accepted.
+  images signed with your key are accepted. It times out after 60 s idle.
+
+## Production keys
+
+The signing key is the whole security of this bootloader: whoever holds the
+private half can make firmware every board accepts. For real devices:
+
+1. **Generate it on a machine that is not the build machine**, ideally offline:
+   `python3 tools/keygen.py --out prod.der --pubkey pubkey.bin`.
+   `prod.der` is created readable only by its owner.
+2. **Copy only `pubkey.bin` to the build machine**, replacing
+   `keys/pubkey.bin`, and commit it. The public half is not secret.
+3. **Build and provision rustBoot with it** (`just provision`, `just flash`).
+   The public key is compiled in, so a board only trusts the key it was
+   provisioned with.
+4. **Sign releases on the key machine**: copy the unsigned `.bin` to a
+   checkout there and, from its `rbsigner/` directory, run
+   `cargo run --release -- mcu-image <app.bin> nistp256 <prod.der> <version>`
+   (rbsigner always writes to `../boards/sign_images/signed_images/`). Copy
+   the signed image back. The private key never leaves that machine.
+5. **Keep an offline backup of `prod.der`.** If it is lost, deployed boards
+   cannot be updated again without reprovisioning rustBoot (J12 and the
+   flasher, at the board).
+6. **Never ship the dev key.** A board built with `rustboot-dev.der`'s
+   `pubkey.bin` accepts anything signed on any machine that has the dev key.
+
+Limits: rustBoot trusts exactly one key, and there is no revocation or
+rotation. Replacing the key means reprovisioning rustBoot on every board.
+Versions only go up: confirm a release before shipping it widely, because a
+confirmed version raises the minimum for good.

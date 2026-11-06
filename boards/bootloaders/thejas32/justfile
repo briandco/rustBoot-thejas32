@@ -1,8 +1,6 @@
 TARGET  := "riscv32im-unknown-none-elf"
 OUT     := "target/" + TARGET + "/release"
-THEJAS  := "../../../../thejas32-rs"
 KEY     := "keys/rustboot-dev.der"
-SIGNED  := "../../sign_images/signed_images"
 
 default:
     @just --list --unsorted
@@ -21,18 +19,9 @@ keygen:
 sign app version:
     cd ../../../rbsigner && cargo run --release -q -- mcu-image {{absolute_path(app)}} nistp256 {{absolute_path(KEY)}} {{version}}
 
-# rustBoot alone, for writing with the CDAC flasher (`just flash`). Apps then go in with `just update`.
+# Build rustBoot into flash.img for the CDAC flasher (`just flash`). Apps go in with `just update`.
 provision: build
     python3 tools/pack.py {{OUT}}/rustboot.bin -o {{OUT}}/flash.img
-
-# rustBoot plus a signed app (<= 128 KB) in slot A, in one flasher image
-pack app version="1": build (sign app version)
-    python3 tools/pack.py {{OUT}}/rustboot.bin {{SIGNED}}/{{file_stem(app)}}_v{{version}}_signed.bin -o {{OUT}}/flash.img
-
-# Same as pack, for a thejas32-rs example by name: just example timer-selftest
-example name version="1":
-    cd {{THEJAS}} && just bin {{name}}
-    just pack {{THEJAS}}/target/{{TARGET}}/release/{{name}}.bin {{version}}
 
 # Build and sign the demo app as version N; confirm="0" builds one that never confirms
 demo version confirm="1":
@@ -52,10 +41,10 @@ update image:
 recovery cmds="i":
     uv run tools/update.py --cmds {{cmds}}
 
-# Copy flash.img with its last byte flipped; rustBoot must refuse it
-tamper:
-    python3 -c "d=bytearray(open('{{OUT}}/flash.img','rb').read()); d[-1]^=1; open('{{OUT}}/flash-bad.img','wb').write(d)"
-    @echo "{{OUT}}/flash-bad.img -- expect: rustBoot: HALT: verification failed: HashMismatch"
+# Copy a signed image with its last byte flipped; `just update` must refuse it
+tamper image:
+    python3 -c "import sys; d=bytearray(open(sys.argv[1],'rb').read()); d[-1]^=1; open(sys.argv[2],'wb').write(d)" {{image}} {{OUT}}/tampered.bin
+    @echo "{{OUT}}/tampered.bin -- expect: refused: HashMismatch"
 
 # Host tests: signer vs verifier, and the state log / boot decision / XMODEM
 test:

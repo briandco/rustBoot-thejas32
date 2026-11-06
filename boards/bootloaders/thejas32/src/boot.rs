@@ -19,6 +19,11 @@ pub type Uart = Serial<pac::Uart0>;
 
 /// How long rustBoot listens for 'r' before booting.
 const RECOVERY_WINDOW_MS: u32 = 500;
+/// Recovery gives up and boots after this long with no input, so a board
+/// left in recovery (or entered by accident) does not stay there forever.
+/// Counted in 1 s polls: TIMER0 wraps every ~43 s at 100 MHz, so one
+/// interval cannot measure it.
+const RECOVERY_IDLE_SECS: u32 = 60;
 const TICKS_PER_MS: u32 = 100_000; // 100 MHz, measured
 
 pub struct Ctx {
@@ -178,13 +183,26 @@ impl Ctx {
     // ------------------------------------------------------------ recovery
 
     fn recovery(&mut self) {
-        let _ = writeln!(self.uart, "\r\nrustBoot recovery: u = upload image (XMODEM), c = confirm trial, i = info, b = boot\r");
+        let _ = writeln!(
+            self.uart,
+            "\r\nrustBoot recovery: u = upload image (XMODEM), c = confirm trial, i = info, b = boot\r\n(boots after {} s without input)\r",
+            RECOVERY_IDLE_SECS
+        );
         loop {
             let _ = write!(self.uart, "rb> ");
+            let mut idle = 0;
             let c = loop {
                 if let Some(c) = self.read_byte(1000) {
-                    break c;
+                    break Some(c);
                 }
+                idle += 1;
+                if idle >= RECOVERY_IDLE_SECS {
+                    break None;
+                }
+            };
+            let Some(c) = c else {
+                let _ = writeln!(self.uart, "\r\nno input for {} s; leaving recovery\r", RECOVERY_IDLE_SECS);
+                return;
             };
             match c {
                 b'u' => {
