@@ -158,8 +158,10 @@ where
 
     let mtime = FileTime::from_last_modification_time(&metadata);
     // println!("\nimage timestamp: {}", mtime.unix_seconds()); // unix seconds values can be interpreted across platforms
-    let atime = FileTime::from_last_access_time(&metadata);
-    assert!(mtime < atime);
+    // Upstream asserted `mtime < atime` here. On Linux (relatime) a freshly
+    // built file has atime == mtime, so signing a just-built image panicked.
+    // The timestamp only records when the input was built; nothing depends on
+    // the ordering.
 
     let hdr_timestamp_len = (HDR_TIMESTAMP_LEN as u16).to_be_bytes();
     let timestamp_tag = Tags::TimeStamp.get_id();

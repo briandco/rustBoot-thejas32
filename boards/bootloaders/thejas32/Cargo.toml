@@ -1,0 +1,38 @@
+[package]
+name = "rustboot-thejas32"
+version = "0.1.0"
+edition = "2021"
+description = "rustBoot secure bootloader for the CDAC VEGA THEJAS32 (ARIES v3)"
+license = "MIT"
+
+[[bin]]
+name = "rustboot-thejas32"
+test = false
+bench = false
+
+[dependencies]
+# `log` is required: upstream's dt/fs modules use it unconditionally.
+rustBoot = { path = "../../../rustBoot", default-features = false, features = ["nistp256", "sha256", "log"] }
+# The validated THEJAS32 drivers, from the sibling thejas32-rs checkout.
+thejas32-hal = { path = "../../../../thejas32-rs/thejas32-hal" }
+rb-core = { path = "rb-core" }
+rb-state = { path = "rb-state" }
+embedded-hal-nb = "1.0.0"
+nb = "1.1.0"
+
+[features]
+# Prints the SPI flash ID under several register-access variants, then halts.
+spi-diag = []
+# Erase/program self-test on the last 4 KB of flash, then halts. Load into RAM.
+flash-selftest = []
+
+# Built on its own, not as part of the ARM `boards` workspace.
+[workspace]
+members = ["rb-state", "rb-core", "demo-app"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = true

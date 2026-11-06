@@ -1,0 +1,3 @@
+target/
+# Locked dependencies make the bootloader build reproducible (the repo root ignores Cargo.lock).
+!Cargo.lock

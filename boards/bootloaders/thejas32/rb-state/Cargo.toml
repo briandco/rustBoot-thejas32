@@ -1,0 +1,11 @@
+[package]
+name = "rb-state"
+version = "0.1.0"
+edition = "2021"
+description = "rustBoot THEJAS32: boot state log, boot decision and XMODEM receiver. No hardware dependencies, so it is tested on the host."
+license = "MIT"
+
+[dependencies]
+
+[lib]
+test = true

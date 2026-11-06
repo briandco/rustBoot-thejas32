@@ -175,3 +175,105 @@ impl log::Log for SimpleLogger {
 pub fn log_init() -> core::result::Result<(), SetLoggerError> {
     log::set_boxed_logger(Box::new(SimpleLogger)).map(|()| log::set_max_level(LevelFilter::Info))
 }
+
+/// End-to-end check that `rustBoot::verify` accepts what `sign_mcu_image`
+/// produces, and rejects it once any part is altered. This is the THEJAS32
+/// port's evidence that signer and bootloader agree on the format.
+#[cfg(test)]
+mod thejas32_verify_tests {
+    use super::*;
+    use rustBoot::rbconstants::IMAGE_HEADER_SIZE;
+    use rustBoot::verify::{parse_header, verify, VerifyError};
+
+    // A fixed, valid P-256 scalar. Test-only; never used to sign real images.
+    const TEST_SCALAR: [u8; 32] = [
+        0x1d, 0x6b, 0x2c, 0x4e, 0x8a, 0x37, 0x91, 0x05, 0xc2, 0x7f, 0x63, 0x18, 0xa4, 0x5e, 0x0b,
+        0xd9, 0x22, 0x84, 0x6f, 0x13, 0xe8, 0x50, 0x9c, 0x3a, 0x71, 0xb6, 0x0d, 0x44, 0x9f, 0x28,
+        0xc5, 0x07,
+    ];
+
+    fn test_key() -> (SigningKeyType, [u8; 64]) {
+        let sk = import_signing_key(CurveType::NistP256, &TEST_SCALAR).unwrap();
+        let SigningKeyType::NistP256(ref k) = sk else { unreachable!() };
+        let point = k.verifying_key().to_encoded_point(false);
+        let mut pk = [0u8; 64];
+        pk.copy_from_slice(&point.as_bytes()[1..]);
+        (sk, pk)
+    }
+
+    /// Signs `fw` the way `rbsigner mcu-image` does.
+    fn sign(fw: &[u8], version: u32) -> (Vec<u8>, [u8; 64]) {
+        let dir = std::env::temp_dir().join(format!("rbsigner-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("fw-{version}.bin"));
+        fs::write(&path, fw).unwrap();
+        // sign_mcu_image asserts mtime < atime, so give the file an older mtime.
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_700_000_000, 0))
+            .unwrap();
+        let (sk, pk) = test_key();
+        let signed =
+            sign_mcu_image(fw.to_vec(), path.to_str().unwrap(), sk, version.to_le_bytes()).unwrap();
+        (signed, pk)
+    }
+
+    fn check(signed: &[u8], pk: &[u8; 64]) -> Result<u32, VerifyError> {
+        let hdr: &[u8; IMAGE_HEADER_SIZE] = signed[..IMAGE_HEADER_SIZE].try_into().unwrap();
+        let h = parse_header(hdr).map_err(VerifyError::Header)?;
+        verify(&h, &signed[IMAGE_HEADER_SIZE..], pk).map(|()| h.version)
+    }
+
+    fn firmware() -> Vec<u8> {
+        (0..5000u32).map(|i| (i * 7 + 3) as u8).collect()
+    }
+
+    #[test]
+    fn signed_image_verifies_and_reports_version() {
+        let (signed, pk) = sign(&firmware(), 7);
+        assert_eq!(check(&signed, &pk), Ok(7));
+        let hdr: &[u8; IMAGE_HEADER_SIZE] = signed[..IMAGE_HEADER_SIZE].try_into().unwrap();
+        assert_eq!(parse_header(hdr).unwrap().fw_size, 5000);
+    }
+
+    #[test]
+    fn flipped_firmware_bit_fails_hash() {
+        let (mut signed, pk) = sign(&firmware(), 1);
+        let last = signed.len() - 1;
+        signed[last] ^= 0x01;
+        assert_eq!(check(&signed, &pk), Err(VerifyError::HashMismatch));
+    }
+
+    #[test]
+    fn changed_version_fails_hash() {
+        // The version is covered by the hash, so rollback-by-editing fails.
+        let (mut signed, pk) = sign(&firmware(), 1);
+        signed[12] = 9;
+        assert_eq!(check(&signed, &pk), Err(VerifyError::HashMismatch));
+    }
+
+    #[test]
+    fn flipped_signature_bit_fails() {
+        let (mut signed, pk) = sign(&firmware(), 1);
+        signed[150] ^= 0x01; // inside the signature value (bytes 120..184)
+        assert_eq!(check(&signed, &pk), Err(VerifyError::BadSignature));
+    }
+
+    #[test]
+    fn other_key_is_reported_as_wrong_key() {
+        let (signed, mut pk) = sign(&firmware(), 1);
+        pk[0] ^= 0x01;
+        assert_eq!(check(&signed, &pk), Err(VerifyError::WrongKey));
+    }
+
+    #[test]
+    fn truncated_firmware_fails_size() {
+        let (signed, pk) = sign(&firmware(), 1);
+        assert_eq!(check(&signed[..signed.len() - 1], &pk), Err(VerifyError::SizeMismatch));
+    }
+
+    #[test]
+    fn bad_magic_is_rejected() {
+        let (mut signed, pk) = sign(&firmware(), 1);
+        signed[0] = 0;
+        assert!(matches!(check(&signed, &pk), Err(VerifyError::Header(_))));
+    }
+}

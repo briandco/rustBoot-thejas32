@@ -1,0 +1,63 @@
+TARGET  := "riscv32im-unknown-none-elf"
+OUT     := "target/" + TARGET + "/release"
+THEJAS  := "../../../../thejas32-rs"
+KEY     := "keys/rustboot-dev.der"
+SIGNED  := "../../sign_images/signed_images"
+
+default:
+    @just --list --unsorted
+
+# Build rustBoot and convert it to a raw binary
+build:
+    cargo build --release -p rustboot-thejas32
+    riscv32-unknown-elf-objcopy -O binary {{OUT}}/rustboot-thejas32 {{OUT}}/rustboot.bin
+    @ls -l {{OUT}}/rustboot.bin
+
+# Create a new signing key (refuses to overwrite one)
+keygen:
+    python3 tools/keygen.py
+
+# Sign a raw application binary: just sign path/to/app.bin 1
+sign app version:
+    cd ../../../rbsigner && cargo run --release -q -- mcu-image {{absolute_path(app)}} nistp256 {{absolute_path(KEY)}} {{version}}
+
+# rustBoot alone, for writing with the CDAC flasher (`just flash`). Apps then go in with `just update`.
+provision: build
+    python3 tools/pack.py {{OUT}}/rustboot.bin -o {{OUT}}/flash.img
+
+# rustBoot plus a signed app (<= 128 KB) in slot A, in one flasher image
+pack app version="1": build (sign app version)
+    python3 tools/pack.py {{OUT}}/rustboot.bin {{SIGNED}}/{{file_stem(app)}}_v{{version}}_signed.bin -o {{OUT}}/flash.img
+
+# Same as pack, for a thejas32-rs example by name: just example timer-selftest
+example name version="1":
+    cd {{THEJAS}} && just bin {{name}}
+    just pack {{THEJAS}}/target/{{TARGET}}/release/{{name}}.bin {{version}}
+
+# Build and sign the demo app as version N; confirm="0" builds one that never confirms
+demo version confirm="1":
+    DEMO_VERSION={{version}} DEMO_CONFIRM={{confirm}} cargo build --release -p demo-app
+    riscv32-unknown-elf-objcopy -O binary {{OUT}}/demo-app {{OUT}}/demo-v{{version}}{{ if confirm == "0" { "-noconfirm" } else { "" } }}.bin
+    just sign {{OUT}}/demo-v{{version}}{{ if confirm == "0" { "-noconfirm" } else { "" } }}.bin {{version}}
+
+# Write flash.img with the CDAC flasher (J12 open, then fitted). Free the serial port first.
+flash img=(OUT + "/flash.img"):
+    uv run tools/flash_persist.py {{img}}
+
+# Install a signed image through rustBoot's recovery mode (J12 fitted), then boot it
+update image:
+    uv run tools/update.py {{image}}
+
+# Send recovery commands: just recovery i   (i = info, c = confirm, b = boot)
+recovery cmds="i":
+    uv run tools/update.py --cmds {{cmds}}
+
+# Copy flash.img with its last byte flipped; rustBoot must refuse it
+tamper:
+    python3 -c "d=bytearray(open('{{OUT}}/flash.img','rb').read()); d[-1]^=1; open('{{OUT}}/flash-bad.img','wb').write(d)"
+    @echo "{{OUT}}/flash-bad.img -- expect: rustBoot: HALT: verification failed: HashMismatch"
+
+# Host tests: signer vs verifier, and the state log / boot decision / XMODEM
+test:
+    cd ../../.. && cargo test -p rbsigner thejas32
+    cargo test -p rb-state --target x86_64-unknown-linux-gnu --release

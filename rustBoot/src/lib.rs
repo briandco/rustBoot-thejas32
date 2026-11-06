@@ -15,6 +15,8 @@ pub mod image;
 #[cfg(feature = "mcu")]
 pub mod parser;
 pub mod rbconstants;
+#[cfg(feature = "nistp256")]
+pub mod verify;
 
 use core::fmt;
 

@@ -6,6 +6,8 @@ members = ["update",
            "firmware/*/*", 
            "bootloaders/*"
            ]
+# THEJAS32 is RISC-V and builds on its own; see bootloaders/thejas32/README.md
+exclude = ["bootloaders/thejas32"]
 
 [profile.dev]
 incremental = false

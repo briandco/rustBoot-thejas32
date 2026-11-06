@@ -1,0 +1,13 @@
+[package]
+name = "rb-core"
+version = "0.1.0"
+edition = "2021"
+description = "rustBoot THEJAS32: flash driver, layout and confirm(), shared by the bootloader and applications"
+license = "MIT"
+
+[lib]
+test = false
+
+[dependencies]
+rb-state = { path = "../rb-state" }
+thejas32-hal = { path = "../../../../../thejas32-rs/thejas32-hal" }

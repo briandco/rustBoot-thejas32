@@ -1,0 +1,17 @@
+[package]
+name = "demo-app"
+version = "0.1.0"
+edition = "2021"
+description = "Test application for rustBoot updates: prints its version, optionally confirms itself"
+license = "MIT"
+
+[[bin]]
+name = "demo-app"
+test = false
+bench = false
+
+[dependencies]
+rb-core = { path = "../rb-core" }
+thejas32-hal = { path = "../../../../../thejas32-rs/thejas32-hal" }
+thejas32-pac = { path = "../../../../../thejas32-rs/thejas32-pac", features = ["rt"] }
+riscv-rt = { version = "0.13.0", features = ["single-hart"] }
