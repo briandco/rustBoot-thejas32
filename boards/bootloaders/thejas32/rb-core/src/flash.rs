@@ -13,11 +13,13 @@
 //! - Chip select (CSAAT) is held for the opcode and every data byte, and
 //!   released only after the last one (`at25sf161Read`, 0x201ed0..0x201f9c).
 //!
-//! Both of the last two differ from the HAL defaults, and both were measured
-//! on hardware (`--features spi-diag`, 2026-11-06):
+//! Both were measured on hardware (`--features spi-diag`, 2026-11-06), and
+//! thejas32-hal now does the same (its `spi-flash-selftest`):
 //!
-//! - DBITS 0 reads the ID as 1f:86:01; DBITS 8 (HAL default) reads ff:ff:ff,
-//!   with either 16- or 32-bit control writes.
+//! - DBITS 0 reads the ID as 1f:86:01; DBITS 8 reads ff:ff:ff, with either
+//!   16- or 32-bit control writes. A transfer is 8 + DBITS bits, so DBITS 8
+//!   is 16-bit words; the HAL's `bits_per_transfer` (default 8) now writes
+//!   DBITS = bits - 8.
 //! - Releasing CSAAT *before* the final byte, as the HAL's `framed` does, read
 //!   1f:86:00: the last byte is lost. Holding it through, as here, reads 01.
 //! - SPI2 (0x1020_0100) reads 00:00:00, so the flash is not on SPI2.
@@ -94,14 +96,14 @@ pub struct Flash {
 impl Flash {
     pub fn new(spi3: Spi3) -> Self {
         Flash {
-            spi: Spi::new(spi3, Config::default().with_bits_per_transfer(0)),
+            spi: Spi::new(spi3, Config::default()),
         }
     }
 
-    /// As `new`, with an explicit DBITS field value (diagnostics only).
-    pub fn new_with_dbits(spi3: Spi3, dbits: u8) -> Self {
+    /// As `new`, with an explicit word size in bits (diagnostics only).
+    pub fn new_with_bits(spi3: Spi3, bits: u8) -> Self {
         Flash {
-            spi: Spi::new(spi3, Config::default().with_bits_per_transfer(dbits)),
+            spi: Spi::new(spi3, Config::default().with_bits_per_transfer(bits)),
         }
     }
 

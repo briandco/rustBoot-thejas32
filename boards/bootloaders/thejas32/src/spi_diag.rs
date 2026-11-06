@@ -110,10 +110,10 @@ pub fn run<W: Write>(out: &mut W) {
     run_variant(out, "SPI2 sw dbits=8", SPI2, false, 8);
     // And the HAL driver itself, configured like flasher.bin.
     let p = unsafe { thejas32_hal::pac::Peripherals::steal() };
-    let mut f = rb_core::flash::Flash::new_with_dbits(p.spi3, 0);
-    let _ = writeln!(out, "  HAL Flash dbits=0             id={:02x?}\r", f.jedec_id());
+    let mut f = rb_core::flash::Flash::new_with_bits(p.spi3, 8);
+    let _ = writeln!(out, "  HAL Flash 8-bit (DBITS 0)     id={:02x?}\r", f.jedec_id());
     let p = unsafe { thejas32_hal::pac::Peripherals::steal() };
-    let mut f = rb_core::flash::Flash::new_with_dbits(p.spi3, 8);
-    let _ = writeln!(out, "  HAL Flash dbits=8             id={:02x?}\r", f.jedec_id());
+    let mut f = rb_core::flash::Flash::new_with_bits(p.spi3, 16);
+    let _ = writeln!(out, "  HAL Flash 16-bit (DBITS 8)    id={:02x?}\r", f.jedec_id());
     let _ = writeln!(out, "done\r");
 }
