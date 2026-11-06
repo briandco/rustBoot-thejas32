@@ -15,3 +15,5 @@ rb-core = { path = "../rb-core" }
 thejas32-hal = { path = "../../../../../thejas32-rs/thejas32-hal" }
 thejas32-pac = { path = "../../../../../thejas32-rs/thejas32-pac", features = ["rt"] }
 riscv-rt = { version = "0.13.0", features = ["single-hart"] }
+embedded-hal-nb = "1.0.0"
+nb = "1.1.0"

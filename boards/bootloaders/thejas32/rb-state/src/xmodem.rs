@@ -1,8 +1,12 @@
 //! XMODEM receiver (CRC mode; 128-byte SOH and 1024-byte STX blocks).
 //!
-//! Receives into a caller-supplied buffer. The sender pads the last block
-//! (with 0x1A), so the returned length is a multiple of 128; the image's own
-//! header says how many bytes are real.
+//! `receive_to` hands each block to a `Sink` as it arrives, so an image can
+//! be written to flash without holding all of it in RAM (an application
+//! receiving its own update). `receive` is the same into one buffer (rustBoot's
+//! recovery mode, which has the whole application region free).
+//!
+//! The sender pads the last block (with 0x1A), so the received length is a
+//! multiple of 128; the image's own header says how many bytes are real.
 
 use crate::crc::crc16_xmodem;
 
@@ -32,6 +36,31 @@ pub enum XmodemError {
     Sequence,
     /// The image is larger than the buffer.
     Overflow,
+    /// The sink refused a block (e.g. a flash write failed, or the image was
+    /// rejected from its header). The transfer was cancelled.
+    Sink,
+}
+
+/// Receives data in order, as XMODEM blocks are accepted.
+pub trait Sink {
+    /// `offset` is where `data` starts in the transfer. Called once per
+    /// accepted block, in order; a repeated block is not passed again.
+    fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), ()>;
+}
+
+struct BufSink<'a> {
+    buf: &'a mut [u8],
+}
+
+impl Sink for BufSink<'_> {
+    fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), ()> {
+        let end = offset + data.len();
+        if end > self.buf.len() {
+            return Err(());
+        }
+        self.buf[offset..end].copy_from_slice(data);
+        Ok(())
+    }
 }
 
 /// Seconds of 'C' polls before giving up on a sender.
@@ -39,7 +68,16 @@ const START_TRIES: u32 = 60;
 const MAX_ERRORS: u32 = 10;
 const BYTE_TIMEOUT_MS: u32 = 1000;
 
+/// Receives into `buf`. Returns the received length.
 pub fn receive<C: Channel>(ch: &mut C, buf: &mut [u8]) -> Result<usize, XmodemError> {
+    let cap = buf.len();
+    let mut sink = BufSink { buf };
+    receive_to(ch, &mut sink, cap)
+}
+
+/// Receives into `sink`, refusing more than `limit` bytes. Returns the
+/// received length.
+pub fn receive_to<C: Channel, S: Sink>(ch: &mut C, sink: &mut S, limit: usize) -> Result<usize, XmodemError> {
     let mut len = 0usize;
     let mut expect: u8 = 1;
     let mut errors = 0u32;
@@ -67,11 +105,14 @@ pub fn receive<C: Channel>(ch: &mut C, buf: &mut [u8]) -> Result<usize, XmodemEr
                 let size = if next == SOH { 128 } else { 1024 };
                 match read_block(ch, size) {
                     Some((blk, data)) if blk == expect => {
-                        if len + size > buf.len() {
+                        if len + size > limit {
                             cancel(ch);
                             return Err(XmodemError::Overflow);
                         }
-                        buf[len..len + size].copy_from_slice(&data[..size]);
+                        if sink.write(len, &data[..size]).is_err() {
+                            cancel(ch);
+                            return Err(XmodemError::Sink);
+                        }
                         len += size;
                         expect = expect.wrapping_add(1);
                         errors = 0;

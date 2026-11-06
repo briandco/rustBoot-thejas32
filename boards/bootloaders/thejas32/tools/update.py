@@ -78,6 +78,7 @@ def main() -> None:
     ap.add_argument("--no-boot", action="store_true", help="after installing, stay in recovery")
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--wait-reset", type=float, default=300, help="seconds to wait for RESET")
+    ap.add_argument("--reboot-key", default=None, help="send this to the running app to make it reboot, instead of waiting for RESET (demo-app: R)")
     ap.add_argument("--capture", type=float, default=15, help="seconds to watch after booting")
     args = ap.parse_args()
 
@@ -85,7 +86,11 @@ def main() -> None:
     with serial.Serial(args.port, 115200, timeout=0.2, write_timeout=10) as conn:
         conn.reset_input_buffer()
         con = Console(conn)
-        print(f"waiting up to {args.wait_reset:.0f}s: press RESET (J12 fitted)", flush=True)
+        if args.reboot_key:
+            print(f"asking the running app to reboot ({args.reboot_key!r})", flush=True)
+            con.send(args.reboot_key)
+        else:
+            print(f"waiting up to {args.wait_reset:.0f}s: press RESET (J12 fitted)", flush=True)
         if con.until(["for recovery"], args.wait_reset) is None:
             raise SystemExit("\nno rustBoot prompt; is J12 fitted, and was RESET pressed after starting this?")
         con.send("r")

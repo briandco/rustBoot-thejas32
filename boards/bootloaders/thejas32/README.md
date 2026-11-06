@@ -19,6 +19,7 @@ just flash               # write it with the CDAC flasher (J12 open, then fitted
 just demo 1              # build + sign the demo app as v1
 just update ../../sign_images/signed_images/demo-v1_v1_signed.bin   # press RESET; installs + boots it
 just recovery i          # press RESET; prints the boot state and both slots
+just app-update ../../sign_images/signed_images/demo-v7_v7_signed.bin  # update through the running app: no reset
 just test                # host tests
 ```
 
@@ -82,7 +83,7 @@ state or the new one. Host tests cut power at every byte of every write and
 erase across 270 saves, and planted bugs make them fail.
 
 Crates: `rb-state` (logic, host-tested), `rb-core` (flash driver, layout,
-`confirm`; shared with apps), `demo-app` (update test app), and the
+`confirm`, `Installer`, `reboot`; shared with apps), `demo-app` (update test app), and the
 bootloader itself (`src/`).
 
 **Apps compile the flash layout in** (through `rb-core`), so after any
@@ -91,6 +92,47 @@ rustBoot. An app built for another layout cannot find the boot state:
 `confirm` then returns `NoBootState` and writes nothing, and the update rolls
 back at the next reset. (Found on hardware: a demo built before the slots
 moved reported "nothing to confirm".)
+
+## Updates from a running application
+
+A real device updates itself: the running application receives the image
+and rustBoot does the rest. `rb-core` provides the pieces, and `demo-app`
+uses them (console command `u`):
+
+```rust
+let mut installer = rb_core::Installer::new();
+// for each chunk of the signed image, in order (e.g. per XMODEM block):
+installer.write(&mut flash, chunk)?;      // header checked, slot erased, data streamed
+let (slot, version) = installer.finish(&mut flash)?;  // now pending
+rb_core::reboot();                         // rustBoot verifies, boots on trial
+```
+
+- **Streaming.** The image goes straight to flash a block at a time; the
+  application needs no RAM buffer for it.
+- **Checked before erasing.** The header's size and version are read first
+  (`rb_state::image::image_info`, no crypto); an oversized or too-old image
+  is refused before anything is erased.
+- **Never trusted by the application.** The application does not verify the
+  signature. rustBoot does, before running anything; a bad image is
+  rejected at boot and the current version keeps running.
+- **Power-safe,** like the recovery install: only the inactive slot is
+  written, and it is marked pending only after the last byte.
+
+### `reboot()`: a software restart
+
+THEJAS32 has no reset register or watchdog that we found: none in vega-sdk
+or the SVD. The watchdog address in TrusteD-V's BSP (`0x1000_3000`) is
+marked there as an unverified placeholder, and reads as all zeros. So
+`rb_core::reboot` jumps to the boot ROM's entry at `0x10000`. Measured on
+hardware: the first ROM words are `li x1,0`, `li x2,0`, ... (register
+clearing, i.e. reset code), and the jump runs the normal flash boot into
+rustBoot. It is a software restart: peripherals keep their settings instead
+of returning to reset defaults.
+
+Consequence: a new version that **hangs** before confirming is not rolled
+back until something resets the board (RESET, or a power cycle). Without a
+hardware watchdog, a product needs one external to the SoC for unattended
+recovery.
 
 ## What changed from upstream rustBoot
 
@@ -191,6 +233,21 @@ After moving apps and state above `0x40000`:
 - Installed v5 (rebuilt for the new layout): trial, confirmed, `active B, min version 5`.
 - Reprovisioned rustBoot again: it booted v5 straight away with
   `state: active B, min version 5`. Reflashing rustBoot no longer touches apps.
+
+### Updates from a running application
+
+No reset or jumper at any step: each update ended in `rb_core::reboot`.
+
+| Step | Board output |
+|---|---|
+| v6 told to reboot, recovery installs v7 | v7 `confirmed` |
+| v7 installs v8 (never confirms) | `pending A v8` → `ON TRIAL` |
+| v8 told to reboot | `ROLLBACK: slot A was on trial and never confirmed` → v7 |
+| v7 installs a tampered v9 | `slot A: v9 FAILED verification: HashMismatch`, `the newly installed image was rejected` → v7 |
+| v7 offered v5 | `VersionTooOld { version: 5, min: 7 }`, nothing erased, v7 keeps running |
+| v7 installs v10 | `ON TRIAL` → `confirmed` |
+
+About 4 s per 18 KB image over UART at 115200.
 
 ## Security notes
 

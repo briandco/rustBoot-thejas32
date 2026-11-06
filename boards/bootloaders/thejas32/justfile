@@ -37,6 +37,14 @@ flash img=(OUT + "/flash.img"):
 update image:
     uv run tools/update.py {{image}}
 
+# Update through the running app (its `u` command): no reset, no jumper
+app-update image:
+    uv run tools/app_update.py {{image}}
+
+# Send keys to the running app: just console R   (demo-app: u = update, R = reboot)
+console +keys:
+    uv run tools/console.py {{keys}}
+
 # Send recovery commands: just recovery i   (i = info, c = confirm, b = boot)
 recovery cmds="i":
     uv run tools/update.py --cmds {{cmds}}

@@ -1,5 +1,6 @@
 use crate::log::{decode, encode, Nor, StateLog, RECORD, SECTOR};
-use crate::xmodem::{receive, Channel, XmodemError};
+use crate::image::{image_info, ImageInfo, HEADER_SIZE};
+use crate::xmodem::{receive, receive_to, Channel, Sink, XmodemError};
 use crate::*;
 use std::collections::VecDeque;
 
@@ -463,4 +464,98 @@ fn checksums_match_standard_check_values() {
     // The published "123456789" check values for CRC-32/ISO-HDLC and CRC-16/XMODEM.
     assert_eq!(crc::crc32(b"123456789"), 0xCBF4_3926);
     assert_eq!(crc::crc16_xmodem(b"123456789"), 0x31C3);
+}
+
+// ---------------------------------------------------------------- streaming
+
+/// Records what a streaming receiver hands over, optionally refusing at an
+/// offset (as an installer refuses a bad header).
+struct RecSink {
+    data: Vec<u8>,
+    calls: Vec<(usize, usize)>,
+    refuse_at: Option<usize>,
+}
+
+impl Sink for RecSink {
+    fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), ()> {
+        if self.refuse_at == Some(offset) {
+            return Err(());
+        }
+        assert_eq!(offset, self.data.len(), "blocks must arrive in order, without gaps or repeats");
+        self.calls.push((offset, data.len()));
+        self.data.extend_from_slice(data);
+        Ok(())
+    }
+}
+
+#[test]
+fn xmodem_streams_blocks_in_order_even_with_errors_and_repeats() {
+    let data = image(3000);
+    let mut s = Sender::new(&data, 128);
+    s.corrupt = vec![1, 9];
+    s.lose_ack = vec![4, 17];
+    let mut sink = RecSink { data: vec![], calls: vec![], refuse_at: None };
+    let n = receive_to(&mut s, &mut sink, 1 << 20).unwrap();
+    assert_eq!(n, 3072);
+    assert_eq!(&sink.data[..3000], &data[..]);
+    assert_eq!(sink.calls.len(), 24, "one call per block, repeats not passed again");
+}
+
+#[test]
+fn xmodem_cancels_when_the_sink_refuses() {
+    let data = image(1000);
+    let mut s = Sender::new(&data, 128);
+    let mut sink = RecSink { data: vec![], calls: vec![], refuse_at: Some(256) };
+    assert_eq!(receive_to(&mut s, &mut sink, 1 << 20), Err(XmodemError::Sink));
+    assert_eq!(sink.data.len(), 256);
+}
+
+#[test]
+fn xmodem_stream_respects_its_limit() {
+    let data = image(1000);
+    let mut s = Sender::new(&data, 128);
+    let mut sink = RecSink { data: vec![], calls: vec![], refuse_at: None };
+    assert_eq!(receive_to(&mut s, &mut sink, 512), Err(XmodemError::Overflow));
+}
+
+// ---------------------------------------------------------------- image header
+
+/// A header laid out as rbsigner writes one (field offsets from
+/// rbsigner/src/mcusigner.rs), with arbitrary digest/signature bytes.
+fn signer_style_header(fw_size: u32, version: u32) -> [u8; HEADER_SIZE] {
+    let mut h = [0xFFu8; HEADER_SIZE];
+    h[0..4].copy_from_slice(b"RUST");
+    h[4..8].copy_from_slice(&fw_size.to_le_bytes());
+    h[8..12].copy_from_slice(&[0x01, 0x00, 0x04, 0x00]);
+    h[12..16].copy_from_slice(&version.to_le_bytes());
+    h[20..24].copy_from_slice(&[0x02, 0x00, 0x08, 0x00]);
+    h[24..32].copy_from_slice(&[7; 8]);
+    h[32..36].copy_from_slice(&[0x04, 0x00, 0x02, 0x00]);
+    h[36..38].copy_from_slice(&[0x01, 0x02]);
+    h[44..48].copy_from_slice(&[0x03, 0x00, 0x20, 0x00]);
+    h[184..186].copy_from_slice(&[0x00, 0x00]);
+    h
+}
+
+#[test]
+fn image_header_gives_size_and_version() {
+    assert_eq!(image_info(&signer_style_header(10_116, 7)), Some(ImageInfo { fw_size: 10_116, version: 7 }));
+}
+
+#[test]
+fn image_header_rejects_garbage() {
+    let mut h = signer_style_header(100, 1);
+    h[0] = b'X';
+    assert_eq!(image_info(&h), None, "bad magic");
+    let mut h = signer_style_header(0, 1);
+    assert_eq!(image_info(&h), None, "zero size");
+    h = signer_style_header(100, 1);
+    h[10] = 9; // version length 9
+    assert_eq!(image_info(&h), None, "wrong version length");
+    assert_eq!(image_info(&[0xFF; HEADER_SIZE]), None, "erased flash");
+    let mut h = [0xFFu8; HEADER_SIZE];
+    h[0..4].copy_from_slice(b"RUST");
+    h[4..8].copy_from_slice(&5u32.to_le_bytes());
+    h[8..10].copy_from_slice(&[0, 0]);
+    assert_eq!(image_info(&h), None, "no version field");
 }

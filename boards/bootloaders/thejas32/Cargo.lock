@@ -85,6 +85,8 @@ dependencies = [
 name = "demo-app"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal-nb",
+ "nb",
  "rb-core",
  "riscv-rt",
  "thejas32-hal",

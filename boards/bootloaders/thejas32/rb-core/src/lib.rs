@@ -1,11 +1,15 @@
 //! THEJAS32 pieces shared by rustBoot and applications: the SPI flash driver,
-//! the flash layout, and `confirm`, which an application calls once it is
-//! running correctly after an update.
+//! the flash layout, `confirm` (an application calls it once it is running
+//! correctly after an update), and `update` (an application installing its
+//! own update, then rebooting into it).
 
 #![no_std]
 
 pub mod flash;
 pub mod layout;
+pub mod update;
+
+pub use update::{reboot, Installer, UpdateError};
 
 pub use rb_state;
 

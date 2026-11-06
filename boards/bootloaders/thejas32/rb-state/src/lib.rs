@@ -23,6 +23,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod crc;
+pub mod image;
 pub mod log;
 pub mod xmodem;
 

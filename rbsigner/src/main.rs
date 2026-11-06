@@ -271,6 +271,18 @@ mod thejas32_verify_tests {
     }
 
     #[test]
+    fn app_side_header_parser_reads_real_signer_output() {
+        // rb_state::image::image_info is what an application uses before
+        // installing an update; it must agree with what rbsigner writes.
+        let (signed, _) = sign(&firmware(), 42);
+        let hdr: &[u8; IMAGE_HEADER_SIZE] = signed[..IMAGE_HEADER_SIZE].try_into().unwrap();
+        let info = rb_state::image::image_info(hdr).expect("parses");
+        assert_eq!(info.fw_size, 5000);
+        assert_eq!(info.version, 42);
+        assert_eq!(rb_state::image::HEADER_SIZE, IMAGE_HEADER_SIZE);
+    }
+
+    #[test]
     fn bad_magic_is_rejected() {
         let (mut signed, pk) = sign(&firmware(), 1);
         signed[0] = 0;
