@@ -94,6 +94,17 @@ pub fn decode(r: &[u8; RECORD]) -> Option<(BootState, u32)> {
     Some((state, word(4)))
 }
 
+impl Cursor {
+    /// Which of the two sectors the latest record is in (0 or 1).
+    pub fn sector(&self) -> u32 {
+        self.sector
+    }
+    /// Sequence number of the latest record.
+    pub fn seq(&self) -> u32 {
+        self.seq
+    }
+}
+
 impl StateLog {
     /// The current state (default if there is no valid record), and where
     /// the next record goes.

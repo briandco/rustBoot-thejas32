@@ -28,6 +28,8 @@ pub struct Ctx {
     log: StateLog,
     state: BootState,
     cursor: Cursor,
+    /// Receive errors seen (and bytes discarded because of them).
+    rx_errors: u32,
 }
 
 /// What `run` decided to boot. The image is already in RAM at `APP_BASE`.
@@ -44,13 +46,29 @@ impl Ctx {
         let log = rb_core::state_log();
         let mut flash = flash;
         let (state, cursor) = log.load(&mut flash)?;
-        Ok(Ctx { uart, flash, timer, log, state, cursor })
+        Ok(Ctx { uart, flash, timer, log, state, cursor, rx_errors: 0 })
     }
 
     pub fn run(&mut self) -> Chosen {
         self.print_state();
+        #[cfg(feature = "hwtest")]
+        self.statelog_wrap_test();
+        // Drop anything already waiting (e.g. left over from a ROM XMODEM
+        // load), then accept an 'r' anywhere in the window.
+        #[cfg(feature = "hwtest")]
+        let lsr0 = unsafe { pac::Peripherals::steal() }.uart0.lsr().read().bits();
+        let mut drained = 0u32;
+        while self.read_byte(0).is_some() {
+            drained += 1;
+        }
+        #[cfg(feature = "hwtest")]
+        let _ = writeln!(self.uart, "HWTEST: uart before window: LSR={:#04x}, drained {} bytes, {} rx errors\r", lsr0, drained, self.rx_errors);
+        let _ = drained;
         let _ = writeln!(self.uart, "  press 'r' within {} ms for recovery\r", RECOVERY_WINDOW_MS);
-        if self.read_byte(RECOVERY_WINDOW_MS) == Some(b'r') {
+        let got_r = self.saw_byte_within(b'r', RECOVERY_WINDOW_MS);
+        #[cfg(feature = "hwtest")]
+        let _ = writeln!(self.uart, "HWTEST: window: 'r' {}, rx errors now {}\r", if got_r { "seen" } else { "NOT seen" }, self.rx_errors);
+        if got_r {
             self.recovery();
         }
         loop {
@@ -276,6 +294,16 @@ impl Ctx {
             }
         }
         let t1 = self.timer.counter();
+        #[cfg(feature = "hwtest")]
+        {
+            // Power-cut test: leave the slot half written, with no pending
+            // record, exactly as a cut during programming would.
+            let _ = self.flash.program(base, &buf[..total / 2]);
+            let _ = writeln!(self.uart, "HWTEST: slot {:?} is half written ({} of {} bytes), not marked pending.\r", target, total / 2, total);
+            let _ = writeln!(self.uart, "HWTEST: CUT POWER NOW (unplug USB)\r");
+            self.uart.flush();
+            loop {}
+        }
         if let Err(e) = self.flash.program(base, &buf[..total]) {
             let _ = writeln!(self.uart, "program failed: {:?}\r", e);
             return;
@@ -312,7 +340,65 @@ impl Ctx {
         while self.read_byte(300).is_some() {}
     }
 
+    // ------------------------------------------------------------ hwtest
+
+    /// Saves the current state 300 times, past both sectors' 128 records, and
+    /// reloads after each save as a reset would. Test builds only.
+    #[cfg(feature = "hwtest")]
+    fn statelog_wrap_test(&mut self) {
+        const SAVES: u32 = 300;
+        let original = self.state;
+        let mut switches = 0;
+        let mut sector = self.cursor.sector();
+        let seq0 = self.cursor.seq();
+        let t0 = self.timer.counter();
+        let _ = writeln!(self.uart, "HWTEST: state log: {} saves from seq {}, sector {}\r", SAVES, seq0, sector);
+        for i in 1..=SAVES {
+            if !self.save(original) {
+                let _ = writeln!(self.uart, "HWTEST: state log FAIL: save {} failed\r", i);
+                return;
+            }
+            match self.log.load(&mut self.flash) {
+                Ok((s, c)) if s == original && c == self.cursor => {}
+                Ok((s, _)) => {
+                    let _ = writeln!(self.uart, "HWTEST: state log FAIL: reload after save {} gave {:?}\r", i, s);
+                    return;
+                }
+                Err(e) => {
+                    let _ = writeln!(self.uart, "HWTEST: state log FAIL: reload after save {}: {:?}\r", i, e);
+                    return;
+                }
+            }
+            if self.cursor.sector() != sector {
+                sector = self.cursor.sector();
+                switches += 1;
+                let _ = writeln!(self.uart, "HWTEST:   save {}: moved to sector {} (seq {})\r", i, sector, self.cursor.seq());
+            }
+        }
+        let _ = writeln!(
+            self.uart,
+            "HWTEST: state log PASS: {} saves, {} sector switches, every reload matched, {} ms\r",
+            SAVES,
+            switches,
+            t0.wrapping_sub(self.timer.counter()) / TICKS_PER_MS
+        );
+    }
+
     // ------------------------------------------------------------ uart
+
+    /// Whether `want` arrives within `window_ms`, ignoring other bytes.
+    fn saw_byte_within(&mut self, want: u8, window_ms: u32) -> bool {
+        let t0 = self.timer.counter();
+        loop {
+            let elapsed = t0.wrapping_sub(self.timer.counter()) / TICKS_PER_MS;
+            if elapsed >= window_ms {
+                return false;
+            }
+            if self.read_byte(window_ms - elapsed) == Some(want) {
+                return true;
+            }
+        }
+    }
 
     fn read_byte(&mut self, timeout_ms: u32) -> Option<u8> {
         let t0 = self.timer.counter();
@@ -320,8 +406,14 @@ impl Ctx {
             match self.uart.read() {
                 Ok(b) => return Some(b),
                 Err(nb::Error::WouldBlock) => {}
-                // Framing or overrun: the byte is lost; XMODEM's CRC catches it.
-                Err(nb::Error::Other(_)) => {}
+                // Framing, parity or overrun error. The HAL reports it without
+                // reading the data register, so read it here to discard the
+                // bad byte; otherwise the error can stay latched and every
+                // later byte is lost. XMODEM's CRC covers anything dropped.
+                Err(nb::Error::Other(_)) => {
+                    self.rx_errors += 1;
+                    let _ = unsafe { pac::Peripherals::steal() }.uart0.rbr().read().bits();
+                }
             }
             if t0.wrapping_sub(self.timer.counter()) / TICKS_PER_MS >= timeout_ms {
                 return None;

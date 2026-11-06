@@ -147,9 +147,24 @@ One reset per step, J12 fitted throughout:
 Upload ran at about 1.3–4 KB/s (2.4–7.6 s for 10 KB). Erasing a slot (3 x 64 KB)
 took 22–172 ms; programming 10 KB took 37 ms. Stack use is 5.5 of 33 KB.
 
-Not yet tested on hardware:
-- a power cut during an install (only simulated, in host tests);
-- the state log wrapping to its second sector (after 128 saves; about 10 were used).
+### Power loss and state-log wrap (`--features hwtest`, `tools/hwtest.py`)
+
+The test build is loaded into RAM through the ROM, so the rustBoot in flash is
+never replaced by it.
+
+- **State log wrap:** 300 saves, three runs, from different starting points.
+  Each switched sector exactly at the 128th record (e.g. save 120 after 8
+  existing records) and every reload matched. About 7.2 s per 300 saves.
+- **Power cut mid-install:** installing v4 stopped with slot B half written
+  (5,186 of 10,372 bytes) and not marked pending; the USB was unplugged. On
+  power-up the board booted v2 by itself. rustBoot then reported
+  `state: active A, min version 2` with nothing pending, and booted slot A v2,
+  ignoring slot B's partial v4.
+
+This cut lands between flash operations, as a cut during programming would
+leave things. A cut in the middle of a state save is covered by the host test
+(every byte of every write) but was not reproduced by hand: the window is
+about 1 ms.
 
 ## Security notes
 

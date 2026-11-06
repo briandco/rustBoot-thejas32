@@ -25,6 +25,9 @@ nb = "1.1.0"
 spi-diag = []
 # Erase/program self-test on the last 4 KB of flash, then halts. Load into RAM.
 flash-selftest = []
+# Board tests: state-log wrap, and a power cut half-way through an install.
+# Load into RAM over the ROM; never write this build to flash.
+hwtest = []
 
 # Built on its own, not as part of the ARM `boards` workspace.
 [workspace]

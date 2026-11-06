@@ -48,6 +48,10 @@ class Console:
     def until(self, needles: list[str], timeout: float) -> str | None:
         """Echo output until one of `needles` appears (returns it) or timeout."""
         deadline = time.monotonic() + timeout
+        # flash.py's XMODEM upload leaves the port's read timeout at 1 s, which
+        # made a prompt take up to a second to notice: longer than rustBoot's
+        # 500 ms recovery window. Keep reads short here.
+        self.conn.timeout = 0.05
         while time.monotonic() < deadline:
             data = self.conn.read(256)
             if data:
