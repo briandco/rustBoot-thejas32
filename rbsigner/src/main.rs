@@ -1,5 +1,6 @@
 mod curve;
 mod fitsigner;
+mod lmssigner;
 mod mcusigner;
 
 use curve::SigningKeyType;
@@ -18,6 +19,40 @@ fn main() {
 
     let args = env::args().collect::<Vec<_>>();
     let args = args.iter().map(|s| &**s).collect::<Vec<_>>();
+
+    // LMS commands (hybrid images). Handled first: the commands below expect
+    // an ECDSA key file as the fourth argument.
+    match args.get(1).copied() {
+        Some("lms-keygen") => {
+            let (Some(private), Some(public)) = (args.get(2), args.get(3)) else {
+                eprintln!("usage: rbsigner lms-keygen <private-key-out> <public-key-out>");
+                std::process::exit(2);
+            };
+            match lmssigner::keygen(std::path::Path::new(private), std::path::Path::new(public)) {
+                Ok(()) => println!("LMS key pair written: {private} (secret, stateful: 1024 signatures) and {public}"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some("lms-sign") => {
+            let (Some(image), Some(key)) = (args.get(2), args.get(3)) else {
+                eprintln!("usage: rbsigner lms-sign <ecdsa-signed-image> <lms-private-key>");
+                std::process::exit(2);
+            };
+            match lmssigner::append_trailer(std::path::Path::new(image), std::path::Path::new(key)) {
+                Ok(n) => println!("LMS trailer appended: {image} is now {n} bytes (key {key} advanced)"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
 
     let mut key_file = Vec::new();
     let mut kf = fs::File::open(args[4]).expect("Need path to key_file as argument");
@@ -280,6 +315,201 @@ mod thejas32_verify_tests {
         assert_eq!(info.fw_size, 5000);
         assert_eq!(info.version, 42);
         assert_eq!(rb_state::image::HEADER_SIZE, IMAGE_HEADER_SIZE);
+    }
+
+    // ------------------------------------------------------------ hybrid (LMS)
+
+    use rustBoot::verify::verify_lms;
+    use std::path::PathBuf;
+
+    fn lms_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("rbsigner-lms-{}-{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ECDSA-signs firmware, writes it to `dir`, LMS-signs it in place.
+    /// Returns (image bytes, ECDSA pubkey, LMS pubkey, LMS key path).
+    fn hybrid(dir: &PathBuf, version: u32) -> (Vec<u8>, [u8; 64], Vec<u8>, PathBuf) {
+        let key = dir.join("lms.key");
+        let pubk = dir.join("lms.pub");
+        if !key.exists() {
+            lmssigner::keygen(&key, &pubk).unwrap();
+        }
+        let (signed, ecdsa_pk) = sign(&firmware(), version);
+        let img = dir.join("img.bin");
+        fs::write(&img, &signed).unwrap();
+        lmssigner::append_trailer(&img, &key).unwrap();
+        (fs::read(&img).unwrap(), ecdsa_pk, fs::read(&pubk).unwrap(), key)
+    }
+
+    fn check_hybrid(img: &[u8], ecdsa_pk: &[u8; 64], lms_pk: &[u8]) -> Result<u32, VerifyError> {
+        let hdr: &[u8; IMAGE_HEADER_SIZE] = img[..IMAGE_HEADER_SIZE].try_into().unwrap();
+        let h = parse_header(hdr).map_err(VerifyError::Header)?;
+        let fw_end = IMAGE_HEADER_SIZE + h.fw_size;
+        verify(&h, &img[IMAGE_HEADER_SIZE..fw_end], ecdsa_pk)?;
+        verify_lms(h.digest(), &img[fw_end..], lms_pk)?;
+        Ok(h.version)
+    }
+
+    #[test]
+    fn lms_hybrid_image_verifies() {
+        let d = lms_dir("ok");
+        let (img, epk, lpk, _) = hybrid(&d, 3);
+        assert_eq!(img.len(), IMAGE_HEADER_SIZE + 5000 + lmssigner::LMS_TRAILER_LEN);
+        assert_eq!(lpk.len(), 60, "HSS L=1 public key");
+        assert_eq!(check_hybrid(&img, &epk, &lpk), Ok(3));
+    }
+
+    #[test]
+    fn lms_stripped_trailer_is_rejected() {
+        let d = lms_dir("strip");
+        let (img, epk, lpk, _) = hybrid(&d, 1);
+        let ecdsa_only = &img[..IMAGE_HEADER_SIZE + 5000];
+        assert_eq!(check_hybrid(ecdsa_only, &epk, &lpk), Err(VerifyError::LmsSignature));
+    }
+
+    #[test]
+    fn lms_any_flipped_signature_byte_is_rejected() {
+        let d = lms_dir("flip");
+        let (img, epk, lpk, _) = hybrid(&d, 1);
+        let start = IMAGE_HEADER_SIZE + 5000;
+        // Every 97th byte of the trailer, including the magic and length.
+        for i in (start..img.len()).step_by(97) {
+            let mut bad = img.clone();
+            bad[i] ^= 0x01;
+            assert!(check_hybrid(&bad, &epk, &lpk).is_err(), "flip at trailer byte {} accepted", i - start);
+        }
+    }
+
+    #[test]
+    fn lms_other_key_is_rejected() {
+        let d = lms_dir("otherkey");
+        let (img, epk, _, _) = hybrid(&d, 1);
+        let d2 = lms_dir("otherkey2");
+        lmssigner::keygen(&d2.join("k"), &d2.join("p")).unwrap();
+        let other = fs::read(d2.join("p")).unwrap();
+        assert_eq!(check_hybrid(&img, &epk, &other), Err(VerifyError::LmsSignature));
+    }
+
+    #[test]
+    fn lms_still_requires_a_valid_ecdsa_signature() {
+        let d = lms_dir("ecdsa");
+        let (mut img, epk, lpk, _) = hybrid(&d, 1);
+        img[150] ^= 0x01; // inside the ECDSA signature
+        assert_eq!(check_hybrid(&img, &epk, &lpk), Err(VerifyError::BadSignature));
+    }
+
+    #[test]
+    fn lms_key_advances_and_never_repeats_a_one_time_key() {
+        let d = lms_dir("advance");
+        let key = d.join("lms.key");
+        lmssigner::keygen(&key, &d.join("lms.pub")).unwrap();
+        let k0 = fs::read(&key).unwrap();
+        let s1 = lmssigner::sign_with_key_file(&[1; 32], &key).unwrap();
+        let k1 = fs::read(&key).unwrap();
+        let s2 = lmssigner::sign_with_key_file(&[2; 32], &key).unwrap();
+        assert_ne!(k0, k1, "key file must change after signing");
+        // HSS signature: Nspk (4) then the LMS signature, which starts with q.
+        let q = |s: &[u8]| u32::from_be_bytes(s[4..8].try_into().unwrap());
+        assert_eq!((q(&s1), q(&s2)), (0, 1));
+    }
+
+    #[test]
+    fn lms_no_signature_without_saving_the_key() {
+        // The library returns a signature only if the key update succeeds.
+        let d = lms_dir("nosave");
+        let key = d.join("lms.key");
+        lmssigner::keygen(&key, &d.join("lms.pub")).unwrap();
+        let bytes = fs::read(&key).unwrap();
+        let r = hbs_lms::sign::<hbs_lms::Sha256_256>(&[7; 32], &bytes, &mut |_| Err(()), None);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn lms_refuses_to_sign_twice_or_a_tampered_image() {
+        let d = lms_dir("twice");
+        let (img, _, _, key) = hybrid(&d, 1);
+        let p = d.join("img.bin");
+        fs::write(&p, &img).unwrap();
+        assert!(lmssigner::append_trailer(&p, &key).is_err(), "already has a trailer");
+        let mut bad = img[..IMAGE_HEADER_SIZE + 5000].to_vec();
+        bad[IMAGE_HEADER_SIZE + 10] ^= 1;
+        fs::write(&p, &bad).unwrap();
+        assert!(lmssigner::append_trailer(&p, &key).is_err(), "digest mismatch");
+    }
+
+    /// rustBoot's own LMS verifier (rustBoot::lms) against hbs-lms, which
+    /// signs: every SHA-256 LM-OTS width, several heights, and a two-level
+    /// HSS. Both must accept every valid signature and reject every corrupted
+    /// one.
+    #[test]
+    fn lms_own_verifier_agrees_with_hbs_lms() {
+        use hbs_lms::{HssParameter, LmotsAlgorithm as W, LmsAlgorithm as H, Seed, Sha256_256};
+        let sets: Vec<Vec<HssParameter<Sha256_256>>> = vec![
+            vec![HssParameter::new(W::LmotsW1, H::LmsH5)],
+            vec![HssParameter::new(W::LmotsW2, H::LmsH5)],
+            vec![HssParameter::new(W::LmotsW4, H::LmsH5)],
+            vec![HssParameter::new(W::LmotsW8, H::LmsH5)],
+            vec![HssParameter::new(W::LmotsW4, H::LmsH10)], // what the bootloader uses
+            vec![HssParameter::new(W::LmotsW2, H::LmsH5), HssParameter::new(W::LmotsW8, H::LmsH5)],
+        ];
+        let mut checked = 0;
+        let mut hbs_lms_panics = 0;
+        std::panic::set_hook(Box::new(|_| {})); // keep the expected panics quiet
+        for (n, params) in sets.iter().enumerate() {
+            let seed = Seed::<Sha256_256>::from([n as u8 + 1; 32]);
+            let (sk, vk) = hbs_lms::keygen::<Sha256_256>(params, &seed, None).unwrap();
+            let mut key = sk.as_slice().to_vec();
+            let pk = vk.as_slice().to_vec();
+            for m in 0..4u8 {
+                let msg = [m; 32];
+                let sig = hbs_lms::sign::<Sha256_256>(&msg, &key.clone(), &mut |k| {
+                    key = k.to_vec();
+                    Ok(())
+                }, None)
+                .unwrap();
+                let sig = sig.as_ref();
+                assert!(hbs_lms::verify::<Sha256_256>(&msg, sig, &pk).is_ok());
+                assert!(rustBoot::lms::hss_verify(&msg, sig, &pk), "set {n} msg {m}: own verifier rejected a valid signature");
+                for i in (0..sig.len()).step_by(sig.len() / 37 + 1) {
+                    let mut bad = sig.to_vec();
+                    bad[i] ^= 0x10;
+                    // hbs-lms panics on some malformed signatures (it reads
+                    // past the buffer when a corrupted embedded public key
+                    // claims other parameters). Count that as a rejection.
+                    let theirs = std::panic::catch_unwind(|| {
+                        hbs_lms::verify::<Sha256_256>(&msg, &bad, &pk).is_ok()
+                    });
+                    if theirs.is_err() {
+                        hbs_lms_panics += 1;
+                    }
+                    let theirs = theirs.unwrap_or(false);
+                    let ours = rustBoot::lms::hss_verify(&msg, &bad, &pk);
+                    assert!(!ours, "set {n} msg {m}: corrupted byte {i} accepted");
+                    assert_eq!(ours, theirs, "set {n} msg {m} byte {i}: verifiers disagree");
+                    checked += 1;
+                }
+            }
+        }
+        let _ = std::panic::take_hook();
+        println!("{checked} corrupted signatures: both verifiers rejected all; hbs-lms panicked on {hbs_lms_panics}");
+        assert!(checked > 500);
+    }
+
+    #[test]
+    fn lms_trailer_size_matches_the_bootloader() {
+        // rb-state's constant sizes the trailer the bootloader reads and the
+        // app installer writes; it must equal what this signer appends.
+        assert_eq!(lmssigner::LMS_TRAILER_LEN, rb_state::image::LMS_TRAILER_LEN);
+    }
+
+    #[test]
+    fn lms_keygen_never_overwrites() {
+        let d = lms_dir("overwrite");
+        lmssigner::keygen(&d.join("k"), &d.join("p")).unwrap();
+        assert!(lmssigner::keygen(&d.join("k"), &d.join("p2")).is_err());
     }
 
     #[test]

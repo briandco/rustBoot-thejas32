@@ -9,4 +9,5 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=--gc-sections");
     println!("cargo:rerun-if-changed=rustboot.x");
     println!("cargo:rerun-if-changed=keys/pubkey.bin");
+    println!("cargo:rerun-if-changed=keys/lms_pubkey.bin");
 }

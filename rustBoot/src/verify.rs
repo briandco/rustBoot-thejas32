@@ -145,6 +145,15 @@ pub fn parse_header(raw: &[u8; IMAGE_HEADER_SIZE]) -> Result<Header<'_>> {
     })
 }
 
+impl Header<'_> {
+    /// The SHA-256 digest stored in the header. After `verify` succeeds it is
+    /// also the digest of the image as checked, so it is what a second
+    /// signature (LMS, in hybrid mode) is checked against.
+    pub fn digest(&self) -> &[u8] {
+        self.digest
+    }
+}
+
 /// Why verification failed, in enough detail to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
@@ -162,6 +171,9 @@ pub enum VerifyError {
     BadSignature,
     /// The embedded public key is not a valid P-256 point.
     BadPublicKey,
+    /// The LMS trailer is missing, malformed, or its signature does not verify.
+    #[cfg(feature = "lms")]
+    LmsSignature,
 }
 
 /// Checks an image's integrity and signature.
@@ -199,5 +211,30 @@ pub fn verify(hdr: &Header<'_>, fw: &[u8], pubkey: &[u8; 64]) -> core::result::R
     match (NistP256Signature { verify_key }).verify(hasher, hdr.signature) {
         Ok(true) => Ok(()),
         _ => Err(VerifyError::BadSignature),
+    }
+}
+
+/// LMS (RFC 8554) trailer appended after the firmware in hybrid mode:
+/// `"LMS1"`, the signature length (u32 little-endian), then an HSS signature
+/// over the image's SHA-256 digest.
+#[cfg(feature = "lms")]
+pub const LMS_TRAILER_MAGIC: [u8; 4] = *b"LMS1";
+
+/// Checks the LMS signature in `trailer` over `digest` (the header's digest,
+/// after `verify` has passed). `lms_pubkey` is an HSS public key.
+///
+/// In hybrid mode an image is accepted only if this and `verify` both pass,
+/// so it is protected unless both ECDSA P-256 and LMS are broken.
+#[cfg(feature = "lms")]
+pub fn verify_lms(digest: &[u8], trailer: &[u8], lms_pubkey: &[u8]) -> core::result::Result<(), VerifyError> {
+    if trailer.len() < 8 || trailer[..4] != LMS_TRAILER_MAGIC {
+        return Err(VerifyError::LmsSignature);
+    }
+    let len = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]) as usize;
+    let sig = trailer.get(8..8 + len).ok_or(VerifyError::LmsSignature)?;
+    if crate::lms::hss_verify(digest, sig, lms_pubkey) {
+        Ok(())
+    } else {
+        Err(VerifyError::LmsSignature)
     }
 }

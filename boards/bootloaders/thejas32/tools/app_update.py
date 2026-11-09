@@ -26,7 +26,7 @@ from update import Console, load_fx  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("image", type=Path)
+    ap.add_argument("image", type=Path, help="signed image; works with a running app ('u') or rustBoot sitting at its recovery prompt")
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--capture", type=float, default=8, help="seconds to watch after the reboot")
     args = ap.parse_args()
@@ -46,9 +46,13 @@ def main() -> None:
         # line (it cancels after the header), swallowing "update refused", so
         # the reasons themselves are matched too.
         hit = con.until(
-            ["rebooting", "refused", "FAILED", "VersionTooOld", "BadHeader", "TooLarge", "NoBootState"], 30
+            ["rebooting", "boots on trial next", "refused", "FAILED", "VersionTooOld", "BadHeader", "TooLarge", "NoBootState"], 30
         )
-        if hit != "rebooting":
+        if hit == "boots on trial next":
+            # rustBoot's recovery mode installed it; tell it to boot.
+            con.until(["rb> "], 5)
+            con.send("b")
+        elif hit != "rebooting":
             con.pump(1)
             raise SystemExit(f"\nupdate not installed ({hit})")
         con.pump(args.capture)

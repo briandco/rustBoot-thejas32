@@ -1,6 +1,7 @@
 //! Installing an update from a running application, and rebooting into it.
 //!
-//! The application streams the signed image (header first) into `Installer`,
+//! The application streams the signed image (header, firmware, LMS trailer)
+//! into `Installer`,
 //! then calls `finish` and `reboot`. rustBoot then verifies the image and
 //! boots it on trial; the new version must call `confirm`, or the following
 //! reboot rolls back. The application never verifies the signature itself:
@@ -14,7 +15,7 @@
 
 use crate::flash::{Flash, FlashError, BLOCK_SIZE};
 use crate::layout::*;
-use rb_state::image::{image_info, HEADER_SIZE};
+use rb_state::image::{image_info, HEADER_SIZE, LMS_TRAILER_LEN};
 use rb_state::log::{Cursor, LogError};
 use rb_state::{install_begin, install_done, BootState, InstallError, Slot};
 
@@ -51,7 +52,7 @@ struct Target {
     slot: Slot,
     base: u32,
     version: u32,
-    /// Header + firmware bytes.
+    /// Header + firmware + LMS trailer bytes.
     total: usize,
     state: BootState,
     cursor: Cursor,
@@ -122,7 +123,7 @@ impl Installer {
             slot,
             base,
             version: info.version,
-            total: HEADER_SIZE + info.fw_size,
+            total: HEADER_SIZE + info.fw_size + LMS_TRAILER_LEN,
             state: next,
             cursor,
         });

@@ -10,7 +10,10 @@ as-slice = "0.2.1"
 filetime = "0.2.16"
 log = {version = "0.4", default-features = false, features = ["std"]}
 p256 = {version = "0.10.1", default-features = false, features = ["ecdsa"], optional = true}
-rustBoot = {path = "../rustBoot"}
+rustBoot = {path = "../rustBoot", features = ["lms"]}
+# LMS signing (hybrid images); same exact version the bootloader verifies with.
+hbs-lms = {version = "=0.1.1", default-features = false}
+rand_core = {version = "0.6", features = ["getrandom"]}
 sha2 = {version = "0.9.9", default-features = false}
 signature = {version = "1.3.1", default-features = false, features = ["digest-preview"]}
 

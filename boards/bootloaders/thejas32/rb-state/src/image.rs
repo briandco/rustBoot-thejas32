@@ -11,6 +11,12 @@
 //! from offset 8 with `0xFF` padding allowed between them, ending at tag 0.
 
 pub const HEADER_SIZE: usize = 0x100;
+
+/// Hybrid images carry an LMS trailer after the firmware: `"LMS1"`, the
+/// signature length (u32 LE) and an HSS signature (L=1, LMS_SHA256_M32_H10,
+/// LMOTS_SHA256_N32_W4: 2512 bytes). Fixed size, so an image is exactly
+/// header + firmware + trailer. Matches rbsigner's `lmssigner`.
+pub const LMS_TRAILER_LEN: usize = 8 + 2512;
 const MAGIC: u32 = 0x5453_5552; // "RUST", little-endian
 const TAG_END: u16 = 0x0000;
 const TAG_VERSION: u16 = 0x0001;

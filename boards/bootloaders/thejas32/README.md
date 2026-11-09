@@ -134,6 +134,42 @@ back until something resets the board (RESET, or a power cycle). Without a
 hardware watchdog, a product needs one external to the SoC for unattended
 recovery.
 
+## Hybrid signatures: ECDSA P-256 + LMS
+
+Every image needs two valid signatures over the same SHA-256 digest:
+ECDSA P-256 in the 256-byte header (unchanged), and LMS (RFC 8554, NIST
+SP 800-208), a post-quantum hash-based scheme, in a fixed 2,520-byte trailer
+after the firmware. An attacker must break both. Images without the trailer
+are rejected (`FAILED verification: LmsSignature`), so the LMS check cannot
+be stripped off.
+
+```
+[256-byte header: ECDSA] [firmware] ["LMS1" | len | HSS signature (2,512 B)]
+```
+
+- **Parameters:** one level, LMS_SHA256_M32_H10 + LMOTS_SHA256_N32_W4:
+  1,024 signatures per key, 2,512-byte signatures, 60-byte public key
+  (`keys/lms_pubkey.bin`, compiled in).
+- **Signing** (`rbsigner lms-keygen`, `lms-sign`; `just sign` does both
+  signatures) uses `hbs-lms` 0.1.1. LMS keys are **stateful**: each signature
+  uses a one-time key. hbs-lms returns a signature only after our callback
+  has saved the advanced key, and that callback writes a temp file, fsyncs
+  it and renames it over the key. A crash can waste a one-time key but never
+  reuse one.
+- **Verification** on the board is rustBoot's own `rustBoot/src/lms.rs`
+  (RFC 8554 algorithms 4b, 6a, 6), not hbs-lms. Measured: hbs-lms's verifier
+  needs 48-64 KB of stack (one function, `generate_public_key_candiate`, has a
+  43 KB frame because it reserves buffers for every Winternitz width at once)
+  against rustBoot's ~27 KB, and it overflowed on the board. The own
+  verifier hashes chain by chain: its largest frame is 656 bytes, and it
+  reuses rustBoot's SHA-256.
+- **Tests for the own verifier:** RFC 8554 Appendix F test cases 1 and 2
+  (two-level HSS); sampled bit flips in every part, truncation and trailing
+  bytes; a planted bug (sibling order) makes both RFC cases fail; and
+  agreement with hbs-lms on 24 valid and 884 corrupted signatures across
+  W1/W2/W4/W8, H5/H10 and two-level HSS. On 24 of the corrupted inputs
+  hbs-lms **panicked** (out-of-bounds read); the own verifier rejected them.
+
 ## What changed from upstream rustBoot
 
 | Change | Why |
@@ -257,6 +293,7 @@ TIMER0 at 100 MHz; three runs each, identical.
 |---|---|
 | SHA-256, 64 KiB | 67.3 ms: 950 KB/s, about 66 us per 64-byte block |
 | SHA-256, 59-byte message (2 blocks) | 161 us per call |
+| LMS H10/W4 verify (own verifier, crypto-bench v17) | **54.4 ms** |
 | Flash read, 45,388-byte image (SPI3 at 6.25 MHz) | 94 ms |
 | `verify` of that image | 414 ms: SHA-256 47 ms + **ECDSA P-256 ~367 ms** |
 
@@ -264,11 +301,25 @@ Code size (symbol table of `rustboot-thejas32`, approximate because LTO
 inlines across crates): SHA-256 ~6.8 KB, P-256/ECDSA ~13.5 KB, header parse
 and glue ~4.2 KB, of a 66 KB bootloader.
 
-For comparison, LMS (NIST SP 800-208) verification is one-block SHA-256
-calls only. At the measured ~66 us per block, LMS-SHA256 with a height-10
-tree would take about 13 ms (Winternitz w=2, ~4.6 KB signature), 34 ms
-(w=4, ~2.5 KB) or 290 ms (w=8, ~1.4 KB). These are estimates from the
-measured hash cost, not measurements.
+Before LMS was added, its cost was estimated from the hash cost at ~34 ms
+for H10/W4 (and ~13 ms for w=2, ~290 ms for w=8). Measured with the own
+verifier: 49-54 ms; the difference is per-call setup across ~500 short
+hashes.
+
+### Hybrid ECDSA + LMS (after reprovisioning rustBoot)
+
+| Step | Board output |
+|---|---|
+| First boot, old ECDSA-only apps in both slots | `v10 FAILED verification: LmsSignature`, `v11 ... LmsSignature`, recovery |
+| Recovery installs hybrid v12 | `verified (sha256+ecdsa 386 ms, lms 49 ms)`, trial, confirmed |
+| v12 installs v13 | `lms 53 ms`, trial, confirmed |
+| v13 offered v14 without the LMS trailer | `Incomplete { written: 17920, total: 20440 }`, not installed |
+| v13 installs v15 with one LMS signature byte flipped | `v15 FAILED verification: LmsSignature`, stays on v13 |
+| crypto-bench v17 | LMS verify **54.4 ms**, ECDSA P-256 367 ms, SHA-256 950 KB/s |
+
+Stack: 6,156 of 27,096 bytes. rustBoot is 71 KB (66 KB before LMS).
+LMS time varies a little per image (49-54 ms): the hash-chain lengths depend
+on the digest.
 
 ## Security notes
 
@@ -303,10 +354,16 @@ private half can make firmware every board accepts. For real devices:
    `cargo run --release -- mcu-image <app.bin> nistp256 <prod.der> <version>`
    (rbsigner always writes to `../boards/sign_images/signed_images/`). Copy
    the signed image back. The private key never leaves that machine.
-5. **Keep an offline backup of `prod.der`.** If it is lost, deployed boards
+5. **LMS keys are stateful.** `lms-dev.key` changes on every signature and
+   allows 1,024 in total. Never restore an older copy of it, and never use
+   the same key file from two machines: either reuses one-time keys, which
+   breaks LMS. Back it up only by copying the current file after signing,
+   and track how many signatures remain (q, the leaf index, is the first
+   4 bytes of the LMS signature after `Nspk`).
+6. **Keep an offline backup of `prod.der`.** If it is lost, deployed boards
    cannot be updated again without reprovisioning rustBoot (J12 and the
    flasher, at the board).
-6. **Never ship the dev key.** A board built with `rustboot-dev.der`'s
+7. **Never ship the dev keys.** A board built with `rustboot-dev.der`'s
    `pubkey.bin` accepts anything signed on any machine that has the dev key.
 
 Limits: rustBoot trusts exactly one key, and there is no revocation or

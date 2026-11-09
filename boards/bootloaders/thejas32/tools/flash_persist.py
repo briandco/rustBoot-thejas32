@@ -79,6 +79,7 @@ def main() -> None:
     ap.add_argument("image", type=Path)
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--capture", type=float, default=20.0, help="seconds to watch the boot (default: %(default)s)")
+    ap.add_argument("--wait-reset", type=float, default=600.0, help="seconds to wait for the first RESET (default: %(default)s)")
     args = ap.parse_args()
 
     fx = load_flash_py()
@@ -89,7 +90,7 @@ def main() -> None:
     with serial.Serial(args.port, 115200, timeout=1, write_timeout=10) as conn:
         conn.reset_input_buffer()
         print("[1/3] J12 (BOOT_SEL) must be OPEN.")
-        if not fx.wait_for_bootloader(conn, 120):
+        if not fx.wait_for_bootloader(conn, args.wait_reset):
             raise SystemExit("no ROM handshake; press RESET after starting this, with J12 open")
         if not fx.upload(conn, FLASHER):
             raise SystemExit("flasher.bin upload failed")

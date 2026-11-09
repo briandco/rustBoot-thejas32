@@ -38,6 +38,10 @@ const _: () = assert!(IMAGE_HEADER_SIZE == rustBoot::rbconstants::IMAGE_HEADER_S
 /// any other key are refused.
 pub static PUBKEY: &[u8; 64] = include_bytes!("../keys/pubkey.bin");
 
+/// The LMS (HSS, L=1) public key (`rbsigner lms-keygen`). Every image must
+/// also carry a valid LMS signature: hybrid ECDSA P-256 + LMS.
+pub static LMS_PUBKEY: &[u8; 60] = include_bytes!("../keys/lms_pubkey.bin");
+
 /// Marker in the last bytes of the image (section `.image_tail`).
 const TAIL_MAGIC: [u8; 8] = *b"RBTJ32\xA5\x5A";
 #[used]

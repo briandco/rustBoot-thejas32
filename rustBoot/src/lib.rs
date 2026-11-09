@@ -17,6 +17,10 @@ pub mod parser;
 pub mod rbconstants;
 #[cfg(feature = "nistp256")]
 pub mod verify;
+#[cfg(feature = "lms")]
+pub mod lms;
+#[cfg(all(test, feature = "lms"))]
+mod lms_rfc_vectors;
 
 use core::fmt;
 

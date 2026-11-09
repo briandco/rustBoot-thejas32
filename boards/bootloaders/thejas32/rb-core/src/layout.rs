@@ -49,9 +49,13 @@ pub const SLOT_B: u32 = 0x7_0000;
 /// The two sectors of the boot state log.
 pub const STATE_SECTORS: [u32; 2] = [0xA_0000, 0xA_1000];
 
-/// Largest firmware: limited by RAM (the image runs from, and is received
-/// into, the application region), not by the 192 KB flash slot.
-pub const MAX_FW_SIZE: usize = APP_REGION_SIZE - IMAGE_HEADER_SIZE;
+/// LMS trailer after the firmware (hybrid ECDSA + LMS signing).
+pub const LMS_TRAILER_LEN: usize = rb_state::image::LMS_TRAILER_LEN;
+
+/// Largest firmware: limited by RAM (the image runs from, and recovery
+/// receives the whole image into, the application region), not by the
+/// 192 KB flash slot.
+pub const MAX_FW_SIZE: usize = APP_REGION_SIZE - IMAGE_HEADER_SIZE - LMS_TRAILER_LEN;
 
 /// Slot A under its phase 1 name, used by the flash self-test.
 pub const BOOT_PART_OFFSET: u32 = SLOT_A;

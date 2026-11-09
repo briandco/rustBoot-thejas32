@@ -1,6 +1,7 @@
 TARGET  := "riscv32im-unknown-none-elf"
 OUT     := "target/" + TARGET + "/release"
 KEY     := "keys/rustboot-dev.der"
+LMS_KEY := "keys/lms-dev.key"
 
 default:
     @just --list --unsorted
@@ -15,9 +16,14 @@ build:
 keygen:
     python3 tools/keygen.py
 
-# Sign a raw application binary: just sign path/to/app.bin 1
+# Sign a raw application binary (ECDSA P-256 + LMS hybrid): just sign path/to/app.bin 1
 sign app version:
     cd ../../../rbsigner && cargo run --release -q -- mcu-image {{absolute_path(app)}} nistp256 {{absolute_path(KEY)}} {{version}}
+    cd ../../../rbsigner && cargo run --release -q -- lms-sign ../boards/sign_images/signed_images/{{file_stem(app)}}_v{{version}}_signed.bin {{absolute_path(LMS_KEY)}}
+
+# Create a new LMS key pair (stateful: 1024 signatures; refuses to overwrite)
+lms-keygen:
+    cd ../../../rbsigner && cargo run --release -q -- lms-keygen {{absolute_path("keys")}}/lms-dev.key {{absolute_path("keys")}}/lms_pubkey.bin
 
 # Build rustBoot into flash.img for the CDAC flasher (`just flash`). Apps go in with `just update`.
 provision: build

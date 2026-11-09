@@ -19,8 +19,8 @@ use core::fmt::Write;
 use core::hint::black_box;
 use embedded_hal_nb::serial::Read;
 use rb_core::flash::Flash;
-use rb_core::layout::{slot_addr, IMAGE_HEADER_SIZE};
-use rustBoot::verify::{parse_header, verify};
+use rb_core::layout::{slot_addr, IMAGE_HEADER_SIZE, LMS_TRAILER_LEN};
+use rustBoot::verify::{parse_header, verify, verify_lms};
 use sha2::{Digest, Sha256};
 use thejas32_hal::pac;
 use thejas32_hal::serial::Serial;
@@ -31,6 +31,7 @@ const VERSION: &str = match option_env!("BENCH_VERSION") {
     None => "0",
 };
 static PUBKEY: &[u8; 64] = include_bytes!("../../keys/pubkey.bin");
+static LMS_PUBKEY: &[u8; 60] = include_bytes!("../../keys/lms_pubkey.bin");
 const TICKS_PER_US: u32 = 100;
 const BUF_LEN: usize = 0x1_0000;
 static mut BUF: [u8; BUF_LEN] = [0; BUF_LEN];
@@ -135,6 +136,15 @@ fn main() -> ! {
             hash,
             total.saturating_sub(hash)
         );
+    }
+    // 4. The LMS half of the hybrid check, over the same digest.
+    let mut trailer = [0u8; LMS_TRAILER_LEN];
+    let _ = flash.read(base + (IMAGE_HEADER_SIZE + h.fw_size) as u32, &mut trailer);
+    for run in 0..3 {
+        let t0 = clk.now();
+        let r = verify_lms(h.digest(), &trailer, LMS_PUBKEY);
+        let us = clk.us(t0);
+        let _ = writeln!(uart, "  lms (H10/W4) verify run {}: {:?}, {} us\r", run + 1, r, us);
     }
     let _ = writeln!(uart, "bench done\r");
     idle(&mut uart)

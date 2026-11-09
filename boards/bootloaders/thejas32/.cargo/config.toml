@@ -3,3 +3,4 @@ target = "riscv32im-unknown-none-elf"
 
 # Linker scripts are passed per binary from each package's build.rs:
 # rustBoot links with rustboot.x, applications with riscv-rt's link.x.
+

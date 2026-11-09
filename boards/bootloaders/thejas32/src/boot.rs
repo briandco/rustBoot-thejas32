@@ -8,12 +8,12 @@ use rb_core::layout::*;
 use rb_state::log::{Cursor, StateLog};
 use rb_state::xmodem::{self, Channel};
 use rb_state::{install_begin, install_done, plan, BootState, Outcome, Slot};
-use rustBoot::verify::{parse_header, verify};
+use rustBoot::verify::{parse_header, verify, verify_lms};
 use thejas32_hal::pac;
 use thejas32_hal::serial::Serial;
 use thejas32_hal::timer::Timer;
 
-use crate::PUBKEY;
+use crate::{LMS_PUBKEY, PUBKEY};
 
 pub type Uart = Serial<pac::Uart0>;
 
@@ -137,16 +137,35 @@ impl Ctx {
             let _ = writeln!(self.uart, "  slot {:?}: flash read error\r", slot);
             return None;
         }
-        match verify(&hdr, fw, PUBKEY) {
-            Ok(()) => {
-                let _ = writeln!(self.uart, "  slot {:?}: v{}, {} bytes, verified\r", slot, hdr.version, hdr.fw_size);
-                Some(hdr.version)
-            }
-            Err(e) => {
-                let _ = writeln!(self.uart, "  slot {:?}: v{} FAILED verification: {:?}\r", slot, hdr.version, e);
-                None
-            }
+        // Hybrid: the ECDSA P-256 signature, then the LMS signature over the
+        // same digest. Both must pass.
+        let t0 = self.timer.counter();
+        if let Err(e) = verify(&hdr, fw, PUBKEY) {
+            let _ = writeln!(self.uart, "  slot {:?}: v{} FAILED verification: {:?}\r", slot, hdr.version, e);
+            return None;
         }
+        let t1 = self.timer.counter();
+        let mut trailer = [0u8; LMS_TRAILER_LEN];
+        if self.flash.read(base + (IMAGE_HEADER_SIZE + hdr.fw_size) as u32, &mut trailer).is_err() {
+            let _ = writeln!(self.uart, "  slot {:?}: flash read error\r", slot);
+            return None;
+        }
+        let t2 = self.timer.counter();
+        if let Err(e) = verify_lms(hdr.digest(), &trailer, LMS_PUBKEY) {
+            let _ = writeln!(self.uart, "  slot {:?}: v{} FAILED verification: {:?}\r", slot, hdr.version, e);
+            return None;
+        }
+        let t3 = self.timer.counter();
+        let _ = writeln!(
+            self.uart,
+            "  slot {:?}: v{}, {} bytes, verified (sha256+ecdsa {} ms, lms {} ms)\r",
+            slot,
+            hdr.version,
+            hdr.fw_size,
+            t0.wrapping_sub(t1) / TICKS_PER_MS,
+            t2.wrapping_sub(t3) / TICKS_PER_MS
+        );
+        Some(hdr.version)
     }
 
     fn print_state(&mut self) {
@@ -280,12 +299,17 @@ impl Ctx {
                 return;
             }
         };
-        let total = IMAGE_HEADER_SIZE + hdr.fw_size;
+        let fw_end = IMAGE_HEADER_SIZE + hdr.fw_size;
+        let total = fw_end + LMS_TRAILER_LEN;
         if hdr.fw_size > MAX_FW_SIZE || total > n {
-            let _ = writeln!(self.uart, "refused: header says {} firmware bytes, received {}\r", hdr.fw_size, n);
+            let _ = writeln!(self.uart, "refused: header says {} firmware bytes (+ LMS trailer), received {}\r", hdr.fw_size, n);
             return;
         }
-        if let Err(e) = verify(&hdr, &buf[IMAGE_HEADER_SIZE..total], PUBKEY) {
+        if let Err(e) = verify(&hdr, &buf[IMAGE_HEADER_SIZE..fw_end], PUBKEY) {
+            let _ = writeln!(self.uart, "refused: {:?}\r", e);
+            return;
+        }
+        if let Err(e) = verify_lms(hdr.digest(), &buf[fw_end..total], LMS_PUBKEY) {
             let _ = writeln!(self.uart, "refused: {:?}\r", e);
             return;
         }
