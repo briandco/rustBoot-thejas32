@@ -306,6 +306,16 @@ for H10/W4 (and ~13 ms for w=2, ~290 ms for w=8). Measured with the own
 verifier: 49-54 ms; the difference is per-call setup across ~500 short
 hashes.
 
+### Power cut during an update from the running app
+
+v18 (119 KB, transfer slowed with `app_update.py --slow-ms 100`) was
+installing v19 into slot A when the USB cable, the board's only supply, was
+pulled about 20 s in. On power-up the board booted v18 by itself. rustBoot
+then reported `state: active B, min version 18` with nothing pending; slot A
+held v19's header (written first) but was never tried, because the slot is
+marked pending only after its last byte. The recovery-mode install was
+tested the same way earlier (`tools/hwtest.py`).
+
 ### Hybrid ECDSA + LMS (after reprovisioning rustBoot)
 
 | Step | Board output |
@@ -355,7 +365,10 @@ private half can make firmware every board accepts. For real devices:
    (rbsigner always writes to `../boards/sign_images/signed_images/`). Copy
    the signed image back. The private key never leaves that machine.
 5. **LMS keys are stateful.** `lms-dev.key` changes on every signature and
-   allows 1,024 in total. Never restore an older copy of it, and never use
+   allows 1,024 in total. `just lms-info` shows how many are left; `lms-sign`
+   prints the count after each signature and warns below 10%. An exhausted
+   key is refused before it is touched (hbs-lms wipes a key after its last
+   signature, so the file then reports "exhausted", not a count). Never restore an older copy of it, and never use
    the same key file from two machines: either reuses one-time keys, which
    breaks LMS. Back it up only by copying the current file after signing,
    and track how many signatures remain (q, the leaf index, is the first

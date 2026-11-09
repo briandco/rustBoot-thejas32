@@ -37,13 +37,43 @@ fn main() {
             }
             return;
         }
+        Some("lms-info") => {
+            let Some(key) = args.get(2) else {
+                eprintln!("usage: rbsigner lms-info <lms-private-key>");
+                std::process::exit(2);
+            };
+            match fs::read(key).and_then(|k| lmssigner::key_status(&k)) {
+                Ok(lmssigner::KeyStatus::Usable { used, remaining }) => {
+                    println!("LMS key {key}: {used} of {} signatures used, {remaining} left", used + remaining);
+                    if (lmssigner::KeyStatus::Usable { used, remaining }).is_low() {
+                        println!("WARNING: fewer than 10% left. Plan a new key: it must be provisioned into rustBoot (J12 + flasher).");
+                    }
+                }
+                Ok(lmssigner::KeyStatus::Exhausted) => {
+                    println!("LMS key {key}: EXHAUSTED, no signatures left (hbs-lms wiped it after its last one)");
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
         Some("lms-sign") => {
             let (Some(image), Some(key)) = (args.get(2), args.get(3)) else {
                 eprintln!("usage: rbsigner lms-sign <ecdsa-signed-image> <lms-private-key>");
                 std::process::exit(2);
             };
             match lmssigner::append_trailer(std::path::Path::new(image), std::path::Path::new(key)) {
-                Ok(n) => println!("LMS trailer appended: {image} is now {n} bytes (key {key} advanced)"),
+                Ok(n) => {
+                    println!("LMS trailer appended: {image} is now {n} bytes");
+                    if let Ok(s) = fs::read(key).and_then(|k| lmssigner::key_status(&k)) {
+                        println!("LMS signatures left: {}", s.remaining());
+                        if s.is_low() {
+                            println!("WARNING: fewer than 10% left. Plan a new key: it must be provisioned into rustBoot (J12 + flasher).");
+                        }
+                    }
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -503,6 +533,44 @@ mod thejas32_verify_tests {
         // rb-state's constant sizes the trailer the bootloader reads and the
         // app installer writes; it must equal what this signer appends.
         assert_eq!(lmssigner::LMS_TRAILER_LEN, rb_state::image::LMS_TRAILER_LEN);
+    }
+
+    #[test]
+    fn lms_key_status_counts_signatures() {
+        let d = lms_dir("status");
+        let key = d.join("lms.key");
+        lmssigner::keygen(&key, &d.join("lms.pub")).unwrap();
+        use lmssigner::KeyStatus::Usable;
+        let s = lmssigner::key_status(&fs::read(&key).unwrap()).unwrap();
+        assert_eq!(s, Usable { used: 0, remaining: 1024 });
+        lmssigner::sign_with_key_file(&[1; 32], &key).unwrap();
+        lmssigner::sign_with_key_file(&[2; 32], &key).unwrap();
+        let s = lmssigner::key_status(&fs::read(&key).unwrap()).unwrap();
+        assert_eq!(s, Usable { used: 2, remaining: 1022 });
+        assert!(!s.is_low());
+    }
+
+    #[test]
+    fn lms_exhausted_key_is_refused_and_left_unchanged() {
+        use hbs_lms::{HssParameter, LmotsAlgorithm, LmsAlgorithm, Seed, Sha256_256};
+        // A height-5 tree: 32 signatures, so exhaustion is quick to reach.
+        let d = lms_dir("exhaust");
+        let key = d.join("small.key");
+        let params = [HssParameter::<Sha256_256>::new(LmotsAlgorithm::LmotsW4, LmsAlgorithm::LmsH5)];
+        let (sk, _) = hbs_lms::keygen::<Sha256_256>(&params, &Seed::from([9u8; 32]), None).unwrap();
+        fs::write(&key, sk.as_slice()).unwrap();
+        for i in 0..32u64 {
+            let s = lmssigner::key_status(&fs::read(&key).unwrap()).unwrap();
+            assert_eq!(s, lmssigner::KeyStatus::Usable { used: i, remaining: 32 - i });
+            assert_eq!(s.is_low(), (32 - i) * 10 < 32);
+            lmssigner::sign_with_key_file(&[i as u8; 32], &key).unwrap();
+        }
+        // All 32 used: hbs-lms wiped the key after the last one.
+        let before = fs::read(&key).unwrap();
+        assert_eq!(lmssigner::key_status(&before).unwrap(), lmssigner::KeyStatus::Exhausted);
+        let err = lmssigner::sign_with_key_file(&[0xEE; 32], &key).unwrap_err();
+        assert!(err.to_string().contains("exhausted"), "{err}");
+        assert_eq!(fs::read(&key).unwrap(), before, "a refused signing must not touch the key");
     }
 
     #[test]

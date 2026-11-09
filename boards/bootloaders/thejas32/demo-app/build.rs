@@ -9,4 +9,5 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-env-changed=DEMO_VERSION");
     println!("cargo:rerun-if-env-changed=DEMO_CONFIRM");
+    println!("cargo:rerun-if-env-changed=DEMO_PAD");
 }

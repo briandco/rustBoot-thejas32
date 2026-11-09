@@ -21,6 +21,10 @@ sign app version:
     cd ../../../rbsigner && cargo run --release -q -- mcu-image {{absolute_path(app)}} nistp256 {{absolute_path(KEY)}} {{version}}
     cd ../../../rbsigner && cargo run --release -q -- lms-sign ../boards/sign_images/signed_images/{{file_stem(app)}}_v{{version}}_signed.bin {{absolute_path(LMS_KEY)}}
 
+# How many LMS signatures the key has left (1024 in total)
+lms-info:
+    cd ../../../rbsigner && cargo run --release -q -- lms-info {{absolute_path(LMS_KEY)}}
+
 # Create a new LMS key pair (stateful: 1024 signatures; refuses to overwrite)
 lms-keygen:
     cd ../../../rbsigner && cargo run --release -q -- lms-keygen {{absolute_path("keys")}}/lms-dev.key {{absolute_path("keys")}}/lms_pubkey.bin

@@ -3,6 +3,8 @@
 //! Build-time settings (environment variables):
 //! - `DEMO_VERSION`: the number it prints; sign it with the same version.
 //! - `DEMO_CONFIRM=0`: never confirm, to test rollback. Default: confirm.
+//! - `DEMO_PAD=1`: add 96 KiB of filler, so an update takes ~25 s over UART
+//!   (time to cut the power mid-transfer in a test).
 //!
 //! Console commands while running (UART0, 115200):
 //! - `u`: receive a signed image over XMODEM, install it into the inactive
@@ -30,6 +32,13 @@ const CONFIRM: bool = match option_env!("DEMO_CONFIRM") {
     None => true,
 };
 const TICKS_PER_MS: u32 = 100_000; // 100 MHz, measured
+
+const PAD_LEN: usize = match option_env!("DEMO_PAD") {
+    Some(v) if v.len() == 1 && v.as_bytes()[0] == b'1' => 96 * 1024,
+    _ => 0,
+};
+/// Filler that makes the image large. Read once so it is kept.
+static PAD: [u8; PAD_LEN] = [0x5A; PAD_LEN];
 
 struct Console {
     uart: Serial<pac::Uart0>,
@@ -91,6 +100,11 @@ fn main() -> ! {
                 let _ = writeln!(con.uart, "demo-app v{}: confirm FAILED: {:?}\r", VERSION, e);
             }
         }
+    }
+    if PAD_LEN > 0 {
+        // SAFETY: plain read of a static; volatile so the filler is kept.
+        let first = unsafe { core::ptr::read_volatile(PAD.as_ptr()) };
+        let _ = writeln!(con.uart, "demo-app v{}: {} bytes of filler ({:#x})\r", VERSION, PAD_LEN, first);
     }
     let _ = writeln!(con.uart, "commands: u = install update (XMODEM), R = reboot\r");
 

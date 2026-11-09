@@ -35,6 +35,49 @@ const HEADER_SIZE: usize = 256;
 const DIGEST_COVER_END: usize = 44;
 const DIGEST_RANGE: core::ops::Range<usize> = 48..80;
 
+/// How much of an LMS key is left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyStatus {
+    Usable { used: u64, remaining: u64 },
+    /// No signatures left. hbs-lms wipes the key (seed, parameters and
+    /// counter) when it makes the key's last signature, so an exhausted key
+    /// file no longer says how many it had.
+    Exhausted,
+}
+
+impl KeyStatus {
+    pub fn remaining(&self) -> u64 {
+        match self {
+            KeyStatus::Usable { remaining, .. } => *remaining,
+            KeyStatus::Exhausted => 0,
+        }
+    }
+    /// Fewer than 10% of the signatures are left.
+    pub fn is_low(&self) -> bool {
+        match self {
+            KeyStatus::Usable { used, remaining } => remaining * 10 < used + remaining,
+            KeyStatus::Exhausted => true,
+        }
+    }
+}
+
+/// Reads a key's usage. `remaining` is hbs-lms's own count
+/// (`SigningKey::get_lifetime`); `used` is the leaf counter, the first 8
+/// bytes (big-endian) of the key as hbs-lms 0.1.1 stores it
+/// (`ReferenceImplPrivateKey::to_binary_representation`). A key the library
+/// cannot compute a lifetime for is the wiped key it leaves after the last
+/// signature (`ReferenceImplPrivateKey::increment` calls `wipe`); measured
+/// with a 32-signature key: lifetimes 32..1 through 31 signatures, then wiped.
+pub fn key_status(key: &[u8]) -> io::Result<KeyStatus> {
+    let bad = || io::Error::new(io::ErrorKind::InvalidData, "not an hbs-lms private key");
+    let sk = hbs_lms::SigningKey::<Sha256_256>::from_bytes(key).map_err(|_| bad())?;
+    let used = u64::from_be_bytes(key.get(..8).ok_or_else(bad)?.try_into().unwrap());
+    Ok(match sk.get_lifetime() {
+        Ok(remaining) if remaining > 0 => KeyStatus::Usable { used, remaining },
+        _ => KeyStatus::Exhausted,
+    })
+}
+
 fn parameters() -> [HssParameter<Sha256_256>; 1] {
     [HssParameter::new(LmotsAlgorithm::LmotsW4, LmsAlgorithm::LmsH10)]
 }
@@ -84,9 +127,16 @@ pub fn write_durably(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
 }
 
 /// Signs `message` with the key in `key_path`, advancing the stored key
-/// before the signature is returned.
+/// before the signature is returned. Refuses an exhausted key without
+/// touching it.
 pub fn sign_with_key_file(message: &[u8], key_path: &Path) -> io::Result<Vec<u8>> {
     let key = fs::read(key_path)?;
+    if key_status(&key)? == KeyStatus::Exhausted {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "LMS key exhausted: every signature has been used. Generate a new key (lms-keygen) and reprovision rustBoot with its public key.",
+        ));
+    }
     let mut persist_error = None;
     let signature = hbs_lms::sign::<Sha256_256>(
         message,
@@ -134,7 +184,8 @@ pub fn image_digest(image: &[u8]) -> io::Result<[u8; 32]> {
     Ok(digest)
 }
 
-/// Appends an LMS trailer to an ECDSA-signed image file, in place.
+/// Appends an LMS trailer to an ECDSA-signed image file, in place. Returns
+/// the new image length.
 pub fn append_trailer(image_path: &Path, key_path: &Path) -> io::Result<usize> {
     let mut image = fs::read(image_path)?;
     let digest = image_digest(&image)?;
